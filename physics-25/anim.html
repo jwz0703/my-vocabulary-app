@@ -1,0 +1,778 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+@font-face{font-family:NotoTC;font-weight:700;src:url(fonts/tc-latin-700.woff2);unicode-range:U+0000-00FF,U+2000-206F,U+2212}
+@font-face{font-family:NotoTC;font-weight:900;src:url(fonts/tc-latin-900.woff2);unicode-range:U+0000-00FF,U+2000-206F,U+2212}
+@font-face{font-family:NotoTC;font-weight:500;src:url(fonts/tc-500.woff2)}
+@font-face{font-family:NotoTC;font-weight:700;src:url(fonts/tc-700.woff2)}
+@font-face{font-family:NotoTC;font-weight:900;src:url(fonts/tc-900.woff2)}
+html,body{margin:0;background:#000}
+</style></head>
+<body><canvas id="c" width="1920" height="1080"></canvas>
+<script>
+// Problem 25 explainer. renderFrame(f) draws frame f; CUES lists every sound hit for audio.py.
+const W = 1920, H = 1080, FPS = 60, DUR = 82;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const FONT = 'NotoTC, "WenQuanYi Zen Hei", "DejaVu Sans", sans-serif';
+const C = { bg0: '#060a18', bg1: '#16245a', yel: '#FFD23F', cyan: '#3DDCFF', red: '#FF5D73', grn: '#4CF2A0',
+  wht: '#F4F6FF', dim: '#8E9AC8', rope: '#E0B36A', brown: '#8B5A2B', dbrown: '#6B4220', beige: '#F5CFA0', pur: '#B69CFF', lcyan: '#9BEFFF' };
+
+// ---- problem numbers
+const M = 14.6, G = 9.8, TH = 11.0 * Math.PI / 180;
+const WT = M * G;                       // 143.08 N
+const TEN = WT / (2 * Math.sin(TH));    // 374.9 N
+
+// ---- scene boundaries
+const S = { hook: 0, prob: 6, setup: 16, fbd: 26, dec: 36, calc: 46, cmp: 58, why: 66, end: 76 };
+const BOUNDS = [6, 16, 26, 36, 46, 58, 66, 76];
+
+// ---- utils
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const lerp = (a, b, t) => a + (b - a) * t;
+const P = (t, a, b) => clamp((t - a) / (b - a));
+const eOut = t => 1 - Math.pow(1 - t, 3);
+const eIn = t => t * t * t;
+const eIO = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const eBack = t => { const c1 = 2.2, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+// pop-in: returns {a, s} for an element appearing at t0 (and leaving at t1)
+function pop(t, t0, t1 = 1e9, d = .4) {
+  const i = P(t, t0, t0 + d), o = 1 - P(t, t1 - .25, t1);
+  return { a: Math.min(clamp(i * 3), o), s: (i < 1 ? eBack(i) : 1) * lerp(.9, 1, o) };
+}
+
+// ---- cues (sound design), built statically so audio.py can read them
+const CUES = [];
+const cue = (t, type, o = {}) => CUES.push(Object.assign({ t: +t.toFixed(3), type }, o));
+
+// ---- drawing helpers
+function font(size, weight = 900) { return `${weight} ${size}px ${FONT}`; }
+function txt(s, x, y, o = {}) {
+  const { size = 48, color = C.wht, weight = 900, align = 'center', alpha = 1, scale = 1, glow = 0, stroke = null, rot = 0 } = o;
+  if (alpha <= 0 || scale <= 0) return;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.rotate(rot); ctx.scale(scale, scale);
+  ctx.font = font(size, weight); ctx.textAlign = align; ctx.textBaseline = 'middle';
+  if (stroke) { ctx.lineWidth = stroke[1]; ctx.strokeStyle = stroke[0]; ctx.lineJoin = 'round'; ctx.strokeText(s, 0, 0); }
+  if (glow) { ctx.shadowColor = color; ctx.shadowBlur = glow; }
+  ctx.fillStyle = color; ctx.fillText(s, 0, 0);
+  ctx.restore();
+}
+function measureRich(parts, size, weight = 900) {
+  return parts.map(p => { ctx.font = font(p[2]?.size || size, p[2]?.weight || weight); return ctx.measureText(p[0]).width; });
+}
+// parts: [[text, color, {size, weight}], ...]
+function rich(parts, x, y, o = {}) {
+  const { size = 48, weight = 900, alpha = 1, scale = 1, glow = 0, align = 'center', rot = 0 } = o;
+  if (alpha <= 0 || scale <= 0) return 0;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.rotate(rot); ctx.scale(scale, scale);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+  const ws = measureRich(parts, size, weight), tot = ws.reduce((a, b) => a + b, 0);
+  let cx = align === 'center' ? -tot / 2 : align === 'right' ? -tot : 0;
+  parts.forEach((p, i) => {
+    ctx.font = font(p[2]?.size || size, p[2]?.weight || weight);
+    const col = p[1] || C.wht;
+    ctx.shadowColor = col; ctx.shadowBlur = glow && col !== C.wht ? glow : 0;
+    ctx.fillStyle = col; ctx.fillText(p[0], cx, 0); cx += ws[i];
+  });
+  ctx.restore(); return tot;
+}
+function rrect(x, y, w, h, r, fill, stroke, lw = 2) {
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, r);
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw; ctx.stroke(); }
+}
+// caption pill at the bottom of the screen
+function caption(parts, t, t0, t1, o = {}) {
+  const { y = 968, size = 46 } = o;
+  const p = pop(t, t0, t1, .35); if (p.a <= 0) return;
+  const w = measureRich(parts, size).reduce((a, b) => a + b, 0) + 90;
+  ctx.save(); ctx.globalAlpha *= p.a; ctx.translate(W / 2, y); ctx.scale(p.s, p.s);
+  ctx.shadowColor = 'rgba(0,0,0,.6)'; ctx.shadowBlur = 30;
+  rrect(-w / 2, -44, w, 88, 44, 'rgba(10,14,36,.88)', null);
+  ctx.shadowBlur = 0;
+  rrect(-w / 2, -44, w, 88, 44, null, 'rgba(255,210,63,.75)', 3);
+  ctx.fillStyle = C.yel; ctx.beginPath(); ctx.arc(-w / 2 + 34, 0, 8, 0, 7); ctx.fill();
+  ctx.restore();
+  rich(parts, W / 2 + 14, y + 2, { size, alpha: p.a, scale: p.s, glow: 12 });
+}
+// small label tag (e.g. section titles)
+function tag(s, x, y, t, t0, color = C.yel, o = {}) {
+  const { size = 38, t1 = 1e9 } = o;
+  const p = pop(t, t0, t1); if (p.a <= 0) return;
+  ctx.font = font(size); const w = ctx.measureText(s).width + 56;
+  ctx.save(); ctx.globalAlpha *= p.a; ctx.translate(x, y); ctx.scale(p.s, p.s);
+  ctx.shadowColor = color; ctx.shadowBlur = 24;
+  rrect(0, -size * .8, w, size * 1.6, 12, color, null);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#0a0f24'; ctx.font = font(size); ctx.textBaseline = 'middle'; ctx.fillText(s, 28, 2);
+  ctx.restore();
+}
+function arrow(x1, y1, x2, y2, color, o = {}) {
+  const { w = 10, head = 36, alpha = 1, prog = 1, glow = 22, dash = null } = o;
+  if (prog <= 0 || alpha <= 0) return;
+  const x = lerp(x1, x2, prog), y = lerp(y1, y2, prog);
+  const ang = Math.atan2(y - y1, x - x1), len = Math.hypot(x - x1, y - y1);
+  const hl = Math.min(head, len * .7);
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = w; ctx.lineCap = 'round';
+  ctx.shadowColor = color; ctx.shadowBlur = glow;
+  if (dash) ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x - Math.cos(ang) * hl * .7, y - Math.sin(ang) * hl * .7); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(x, y);
+  ctx.lineTo(x - Math.cos(ang - .45) * hl, y - Math.sin(ang - .45) * hl);
+  ctx.lineTo(x - Math.cos(ang + .45) * hl, y - Math.sin(ang + .45) * hl);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
+function dashLine(x1, y1, x2, y2, color, o = {}) {
+  const { w = 3, alpha = 1, prog = 1, dash = [14, 12] } = o;
+  if (prog <= 0 || alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.strokeStyle = color; ctx.lineWidth = w; ctx.setLineDash(dash);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(lerp(x1, x2, prog), lerp(y1, y2, prog)); ctx.stroke(); ctx.restore();
+}
+function check(x, y, s, color, prog) {
+  if (prog <= 0) return;
+  const pts = [[-.5, 0], [-.15, .35], [.55, -.4]];
+  const l1 = Math.hypot(.35, .35), l2 = Math.hypot(.7, .75), tot = l1 + l2, d = prog * tot;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.strokeStyle = color; ctx.lineWidth = .16; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.shadowColor = color; ctx.shadowBlur = 20 / s;
+  ctx.beginPath(); ctx.moveTo(...pts[0]);
+  if (d < l1) ctx.lineTo(lerp(pts[0][0], pts[1][0], d / l1), lerp(pts[0][1], pts[1][1], d / l1));
+  else { ctx.lineTo(...pts[1]); const u = (d - l1) / l2; ctx.lineTo(lerp(pts[1][0], pts[2][0], u), lerp(pts[1][1], pts[2][1], u)); }
+  ctx.stroke(); ctx.restore();
+}
+function rope(x1, y1, x2, y2, o = {}) {
+  const { w = 9, alpha = 1, prog = 1 } = o;
+  if (prog <= 0 || alpha <= 0) return;
+  const x = lerp(x1, x2, prog), y = lerp(y1, y2, prog);
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.lineCap = 'round';
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 6;
+  ctx.strokeStyle = C.rope; ctx.lineWidth = w; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x, y); ctx.stroke();
+  ctx.shadowColor = 'transparent';
+  ctx.strokeStyle = 'rgba(120,70,20,.55)'; ctx.lineWidth = w * .5; ctx.setLineDash([w * .7, w * .9]);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x, y); ctx.stroke();
+  ctx.restore();
+}
+function post(x, yTop, yBot, dy = 0) {
+  ctx.save(); ctx.translate(0, dy);
+  const g = ctx.createLinearGradient(x - 24, 0, x + 24, 0);
+  g.addColorStop(0, '#3a4470'); g.addColorStop(.5, '#6c78b0'); g.addColorStop(1, '#2c3458');
+  ctx.fillStyle = g; ctx.fillRect(x - 22, yTop, 44, yBot - yTop);
+  rrect(x - 34, yTop - 22, 68, 30, 8, '#8a96d0', null);
+  ctx.fillStyle = C.yel; ctx.beginPath(); ctx.arc(x, yTop, 9, 0, 7); ctx.fill();
+  ctx.restore();
+}
+// Cartoon monkey. (x, y) is where its hands grip; it hangs below that point.
+function monkey(x, y, s = 1, o = {}) {
+  const { alpha = 1, t = 0, rot = 0, sq = 0, wave = false } = o;
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s * (1 + sq * .6), s * (1 - sq));
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  // tail
+  ctx.strokeStyle = C.dbrown; ctx.lineWidth = 11;
+  ctx.beginPath(); ctx.moveTo(26, 190); ctx.bezierCurveTo(95, 215, 115, 150, 82, 135); ctx.bezierCurveTo(62, 127, 58, 150, 72, 155); ctx.stroke();
+  // arms
+  ctx.strokeStyle = C.brown; ctx.lineWidth = 20;
+  ctx.beginPath(); ctx.moveTo(-12, 4); ctx.quadraticCurveTo(-46, 50, -34, 128); ctx.stroke();
+  if (wave) {
+    const a = Math.sin(t * 9) * .5;
+    ctx.save(); ctx.translate(34, 128); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.quadraticCurveTo(40, -40, 56, -120); ctx.stroke();
+    ctx.fillStyle = C.beige; ctx.beginPath(); ctx.arc(56, -124, 13, 0, 7); ctx.fill();
+    ctx.restore();
+  } else { ctx.beginPath(); ctx.moveTo(12, 4); ctx.quadraticCurveTo(46, 50, 34, 128); ctx.stroke(); }
+  // legs
+  ctx.lineWidth = 18;
+  ctx.beginPath(); ctx.moveTo(-20, 200); ctx.quadraticCurveTo(-40, 230, -30, 250); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(20, 200); ctx.quadraticCurveTo(40, 230, 30, 250); ctx.stroke();
+  ctx.fillStyle = C.beige;
+  ctx.beginPath(); ctx.ellipse(-34, 254, 15, 9, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(34, 254, 15, 9, 0, 0, 7); ctx.fill();
+  // body
+  ctx.fillStyle = C.brown; ctx.beginPath(); ctx.ellipse(0, 165, 44, 50, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = C.beige; ctx.beginPath(); ctx.ellipse(0, 172, 28, 34, 0, 0, 7); ctx.fill();
+  // hands
+  ctx.fillStyle = C.beige;
+  ctx.beginPath(); ctx.arc(-11, 2, 12, 0, 7); ctx.fill();
+  if (!wave) { ctx.beginPath(); ctx.arc(11, 2, 12, 0, 7); ctx.fill(); }
+  // head
+  ctx.fillStyle = C.brown;
+  ctx.beginPath(); ctx.arc(-52, 82, 20, 0, 7); ctx.arc(52, 82, 20, 0, 7); ctx.fill();
+  ctx.fillStyle = C.beige;
+  ctx.beginPath(); ctx.arc(-52, 82, 11, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(52, 82, 11, 0, 7); ctx.fill();
+  ctx.fillStyle = C.brown; ctx.beginPath(); ctx.arc(0, 82, 52, 0, 7); ctx.fill();
+  ctx.fillStyle = C.beige;
+  ctx.beginPath(); ctx.ellipse(0, 100, 36, 27, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(-17, 74, 19, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(17, 74, 19, 0, 7); ctx.fill();
+  // eyes (blink every ~3 s)
+  const blink = ((t + .7) % 3.1) < .12 ? .12 : 1;
+  ctx.fillStyle = '#1a1020';
+  ctx.beginPath(); ctx.ellipse(-16, 74, 7, 8 * blink, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(16, 74, 7, 8 * blink, 0, 0, 7); ctx.fill();
+  if (blink === 1) { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-13, 71, 2.6, 0, 7); ctx.arc(19, 71, 2.6, 0, 7); ctx.fill(); }
+  // nose + smile + cheeks
+  ctx.fillStyle = '#5a3418'; ctx.beginPath(); ctx.arc(-5, 94, 2.8, 0, 7); ctx.arc(5, 94, 2.8, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#5a3418'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 100, 15, .25, Math.PI - .25); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,120,120,.35)'; ctx.beginPath(); ctx.arc(-28, 98, 7, 0, 7); ctx.arc(28, 98, 7, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+// ---- background, grain, vignette
+const rnd = mulberry(42);
+const DOTS = [...Array(80)].map(() => ({ x: rnd() * W, y: rnd() * H, r: .8 + rnd() * 2.4, sp: 8 + rnd() * 28, ph: rnd() * 6.28 }));
+const GRAIN = [0, 1, 2, 3].map(k => {
+  const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+  const im = g.createImageData(256, 256), r = mulberry(100 + k);
+  for (let i = 0; i < im.data.length; i += 4) { const v = r() * 255; im.data[i] = im.data[i + 1] = im.data[i + 2] = v; im.data[i + 3] = 255; }
+  g.putImageData(im, 0, 0); return c;
+});
+function background(t, hue = 0) {
+  const g = ctx.createRadialGradient(W / 2, H * .42, 60, W / 2, H / 2, 1250);
+  g.addColorStop(0, hue ? '#2a1846' : C.bg1); g.addColorStop(1, C.bg0);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(120,150,255,.07)'; ctx.lineWidth = 1;
+  const off = (t * 14) % 80;
+  ctx.beginPath();
+  for (let x = -80 + off; x < W + 80; x += 80) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+  for (let y = -80 + off; y < H + 80; y += 80) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+  ctx.stroke();
+  for (const d of DOTS) {
+    const y = ((d.y - t * d.sp) % H + H) % H;
+    ctx.fillStyle = `rgba(160,190,255,${.12 + .18 * (.5 + .5 * Math.sin(t * 2 + d.ph))})`;
+    ctx.beginPath(); ctx.arc(d.x + Math.sin(t * .5 + d.ph) * 12, y, d.r, 0, 7); ctx.fill();
+  }
+}
+function postFX(f) {
+  const v = ctx.createRadialGradient(W / 2, H / 2, 500, W / 2, H / 2, 1200);
+  v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(0,0,0,.55)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.globalAlpha = .045; ctx.globalCompositeOperation = 'overlay';
+  ctx.fillStyle = ctx.createPattern(GRAIN[f % 4], 'repeat'); ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+
+// ---- impacts drive camera shake + flash
+const IMPACTS = [];
+const impact = (t, amp = 14, sfx = 'impact') => { IMPACTS.push({ t, amp }); cue(t, sfx, { amp }); };
+function shake(t) {
+  let dx = 0, dy = 0;
+  for (const i of IMPACTS) {
+    const u = t - i.t; if (u < 0 || u > .6) continue;
+    const e = i.amp * Math.exp(-u * 9);
+    dx += e * Math.sin(u * 83 + i.t); dy += e * Math.cos(u * 71 + i.t * 3);
+  }
+  return [dx, dy];
+}
+function flash(t) {
+  let a = 0;
+  for (const i of IMPACTS) { const u = t - i.t; if (u >= 0 && u < .3 && i.amp >= 18) a = Math.max(a, .35 * (1 - u / .3)); }
+  return a;
+}
+
+// ---- scene transitions: three skewed panels sweep across each boundary
+for (const b of BOUNDS) cue(b - .42, 'whoosh', { dur: .7 });
+function transition(t) {
+  for (const b of BOUNDS) {
+    const u = (t - (b - .42)) / .84; if (u <= 0 || u >= 1) continue;
+    [[C.yel, .1], [C.cyan, .05], ['#0b1130', 0]].forEach(([col, lead]) => {
+      const p = clamp(u + lead);
+      const x = p < .5 ? lerp(-2700, -300, eIO(p * 2)) : lerp(-300, 2400, eIO(p * 2 - 1));
+      ctx.fillStyle = col; ctx.beginPath();
+      ctx.moveTo(x, 0); ctx.lineTo(x + 2500, 0); ctx.lineTo(x + 2200, H); ctx.lineTo(x - 300, H); ctx.closePath(); ctx.fill();
+    });
+  }
+}
+
+// =====================================================================
+// SCENE 1 — hook (0–6)
+// =====================================================================
+cue(0, 'swell', { dur: .3 }); impact(.3, 26, 'boom');
+cue(1.0, 'pop', { n: 0 }); cue(1.35, 'pop', { n: 2 });
+cue(2.3, 'glitch'); cue(3.6, 'slideup'); cue(4.4, 'pop', { n: 4 }); cue(3.8, 'riser', { dur: 2.2 });
+function sHook(t) {
+  // speed rays
+  const ra = (1 - P(t, .3, 1.6)) * (t > .3 ? 1 : 0);
+  if (ra > 0) {
+    ctx.save(); ctx.translate(W / 2, 380); ctx.globalAlpha = ra * .5;
+    for (let i = 0; i < 48; i++) {
+      const a = i / 48 * Math.PI * 2 + t * .2, r0 = 200 + 900 * eOut(P(t, .3, 1.2));
+      ctx.strokeStyle = i % 2 ? C.yel : C.cyan; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * r0 * .55, Math.sin(a) * r0 * .55); ctx.lineTo(Math.cos(a) * r0, Math.sin(a) * r0); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  const ti = P(t, .25, .45);
+  txt('應用題 · 力的平衡', W / 2, 225, { size: 40, color: C.dim, weight: 700, alpha: P(t, .7, 1.1) });
+  txt('第 25 題', W / 2, 380, { size: 210, color: C.yel, scale: lerp(3.2, 1, eOut(ti)), alpha: ti, glow: 40 + 30 * Math.sin(t * 4) });
+  const p1 = pop(t, 1.0), p2 = pop(t, 1.35);
+  txt('一隻猴子', 720, 570, { size: 92, alpha: p1.a, scale: p1.s });
+  txt('×', 960, 570, { size: 70, color: C.dim, alpha: p2.a });
+  txt('一條繩子', 1200, 570, { size: 92, alpha: p2.a, scale: p2.s });
+  // glitchy question
+  if (t > 2.3) {
+    const g = t < 2.75, r = mulberry(Math.floor(t * 60));
+    const jx = g ? (r() - .5) * 40 : 0, jy = g ? (r() - .5) * 10 : 0;
+    if (g) {
+      txt('繩子到底要承受多大的力？', W / 2 + jx - 8, 715 + jy, { size: 78, color: '#ff2a6d', alpha: .8 });
+      txt('繩子到底要承受多大的力？', W / 2 - jx + 8, 715 - jy, { size: 78, color: '#05d9e8', alpha: .8 });
+    }
+    txt('繩子到底要承受多大的力？', W / 2 + jx * .3, 715, { size: 78, color: C.yel, glow: 26 });
+  }
+  const p3 = pop(t, 4.4);
+  txt('答案會讓你嚇一跳！', W / 2, 850, { size: 54, weight: 700, alpha: p3.a, scale: p3.s });
+  // monkey peeks in from the bottom right
+  const mk = eBack(P(t, 3.6, 4.2));
+  monkey(1640, lerp(1250, 790, mk), .95, { t, rot: -.15 + Math.sin(t * 3) * .05, wave: true });
+  const q = pop(t, 4.0);
+  txt('?', 1780, 700 + Math.sin(t * 5) * 8, { size: 110, color: C.yel, alpha: q.a, scale: q.s, glow: 30, rot: .2 });
+}
+
+// =====================================================================
+// SCENE 2 — problem (6–16)
+// =====================================================================
+const LINES = [
+  [['一隻 '], ['14.6 kg', 'm'], [' 的猴子懸吊在一條'], ['輕質繩子', 'l'], ['的中間，']],
+  [['兩邊的繩子與水平線的夾角皆為 '], ['11.0°', 'a'], ['，']],
+  [['求繩子的'], ['張力', 't'], ['並與猴子的'], ['重量', 'w'], ['相比較。']],
+];
+const HL = { m: [12.0, C.yel], a: [12.6, C.yel], l: [13.2, C.cyan], t: [13.8, C.cyan], w: [13.8, C.red] };
+const NCH = LINES.flat().reduce((a, s) => a + [...s[0]].length, 0);
+const TYPE0 = S.prob + .7, TYPE1 = S.prob + 5.4;
+for (let i = 0; i < NCH; i++) if (i % 2 === 0) cue(lerp(TYPE0, TYPE1, i / NCH), 'tick');
+['m', 'a', 'l', 't'].forEach((k, i) => cue(HL[k][0], 'hl', { n: i }));
+const CHIPS = [['m = 14.6 kg', C.yel], ['θ = 11.0°', C.yel], ['g = 9.8 m/s²', C.dim], ['求：T = ?', C.cyan]];
+CHIPS.forEach((c, i) => cue(S.prob + 8.2 + i * .4, 'pop', { n: i }));
+function sProb(t) {
+  const lt = t - S.prob;
+  const ca = eOut(P(lt, 0, .5));
+  ctx.save(); ctx.globalAlpha = ca; ctx.translate(0, (1 - ca) * 80);
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 40;
+  rrect(200, 150, 1520, 470, 28, 'rgba(16,24,58,.92)', null);
+  ctx.shadowBlur = 0; rrect(200, 150, 1520, 470, 28, null, 'rgba(61,220,255,.45)', 3);
+  ctx.restore();
+  tag('第 25 題', 240, 150, lt, .3);
+  // typewriter with highlight boxes
+  let shown = Math.floor(P(t, TYPE0, TYPE1) * NCH), cnt = 0;
+  LINES.forEach((line, li) => {
+    let x = 270; const y = 275 + li * 108;
+    for (const [s, key] of line) {
+      const chars = [...s], vis = chars.slice(0, Math.max(0, shown - cnt)).join(''); cnt += chars.length;
+      ctx.font = font(56, 700); const wFull = ctx.measureText(s).width;
+      let col = C.wht;
+      if (key && HL[key]) {
+        const [ht, hc] = HL[key], hp = eOut(P(t, ht, ht + .35));
+        if (hp > 0) {
+          ctx.save(); ctx.globalAlpha = .25; ctx.fillStyle = hc; ctx.beginPath(); ctx.roundRect(x - 8, y - 38, (wFull + 16) * hp, 76, 10); ctx.fill(); ctx.restore();
+          ctx.fillStyle = hc; ctx.fillRect(x - 4, y + 36, (wFull + 8) * hp, 5);
+          col = hc;
+        }
+      }
+      txt(vis, x, y, { size: 56, weight: 700, align: 'left', color: col });
+      x += wFull;
+      if (vis.length < chars.length && vis.length > 0 && Math.floor(t * 4) % 2 === 0) { ctx.fillStyle = C.yel; ctx.fillRect(x - wFull + ctx.measureText(vis).width + 4, y - 30, 5, 60); }
+    }
+  });
+  // known-values chips
+  ctx.font = font(46);
+  const ws = CHIPS.map(c => ctx.measureText(c[0]).width + 70), gap = 34, tot = ws.reduce((a, b) => a + b) + gap * 3;
+  let x = W / 2 - tot / 2;
+  CHIPS.forEach((c, i) => {
+    const p = pop(t, S.prob + 8.2 + i * .4);
+    if (p.a > 0) {
+      ctx.save(); ctx.globalAlpha = p.a; ctx.translate(x + ws[i] / 2, 790); ctx.scale(p.s, p.s);
+      rrect(-ws[i] / 2, -48, ws[i], 96, 48, 'rgba(12,18,44,.9)', c[1], 4);
+      ctx.restore();
+      txt(c[0], x + ws[i] / 2, 792, { size: 46, color: c[1], alpha: p.a, scale: p.s, glow: 14 });
+    }
+    x += ws[i] + gap;
+  });
+  txt('已知', W / 2, 690, { size: 34, color: C.dim, weight: 700, alpha: P(t, S.prob + 8, S.prob + 8.3) });
+}
+
+// =====================================================================
+// SCENE 3 — physical setup (16–26)
+// =====================================================================
+const AX = 360, BX = 1560, RY = 360, HALF = 600, SAG = HALF * Math.tan(TH);
+const T3 = S.setup;
+cue(T3 + .1, 'thud'); cue(T3 + .3, 'thud', { n: 1 }); cue(T3 + .8, 'swish', { dur: .8 });
+cue(T3 + 1.6, 'fall', { dur: .8 }); impact(T3 + 2.4, 16); cue(T3 + 2.4, 'boing');
+cue(T3 + 4.5, 'pop', { n: 1 }); cue(T3 + 4.9, 'pop', { n: 3 }); cue(T3 + 5.3, 'pop', { n: 5 });
+cue(T3 + 5.9, 'pop', { n: 2 }); cue(T3 + 8.0, 'pop', { n: 4 }); cue(T3 + 9.2, 'riser', { dur: .8 });
+function sag3(lt) {
+  if (lt < 2.4) return 0;
+  const u = lt - 2.4; return SAG * (1 - Math.exp(-3.4 * u) * Math.cos(10 * u));
+}
+function angleArc(cx, cy, a0, a1, r, color, prog, label, lx, ly, lp) {
+  if (prog > 0) {
+    ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 5; ctx.shadowColor = color; ctx.shadowBlur = 16;
+    ctx.beginPath(); ctx.arc(cx, cy, r, a0, lerp(a0, a1, prog), a1 < a0); ctx.stroke(); ctx.restore();
+  }
+  if (lp) txt(label, lx, ly, { size: 46, color, alpha: lp.a, scale: lp.s, glow: 18 });
+}
+function sSetup(t) {
+  const lt = t - T3;
+  // zoom into the knot at the end
+  const z = eIn(P(lt, 9.2, 10));
+  const mx = W / 2, my = RY + SAG;
+  ctx.save(); ctx.translate(mx, my); ctx.scale(1 + z * 1.6, 1 + z * 1.6); ctx.translate(-mx, -my);
+  ctx.strokeStyle = 'rgba(140,160,230,.25)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, 900); ctx.lineTo(W, 900); ctx.stroke();
+  post(AX, RY, 900, lerp(700, 0, eBack(P(lt, 0, .45))));
+  post(BX, RY, 900, lerp(700, 0, eBack(P(lt, .2, .65))));
+  const sg = sag3(lt), mY = RY + sg;
+  const rp = eOut(P(lt, .8, 1.6));
+  if (lt < 2.4) rope(AX, RY, BX, RY, { prog: rp });
+  else { rope(AX, RY, W / 2, mY); rope(BX, RY, W / 2, mY); }
+  // reference lines + angle arcs
+  const dl = P(lt, 4.2, 4.6);
+  dashLine(AX, RY, AX + 260, RY, C.dim, { prog: dl, alpha: .8 });
+  dashLine(BX, RY, BX - 260, RY, C.dim, { prog: dl, alpha: .8 });
+  angleArc(AX, RY, 0, TH, 170, C.yel, eOut(P(lt, 4.4, 4.8)), '11.0°', AX + 250, RY + 30, pop(lt, 4.5));
+  angleArc(BX, RY, Math.PI, Math.PI - TH, 170, C.yel, eOut(P(lt, 4.8, 5.2)), '11.0°', BX - 250, RY + 30, pop(lt, 4.9));
+  // the monkey
+  let my2 = mY, sq = 0;
+  if (lt < 2.4) my2 = lerp(-320, RY, eIn(P(lt, 1.6, 2.4)));
+  else { const u = lt - 2.4; sq = .1 * Math.exp(-6 * u) * Math.sin(16 * u); }
+  if (lt > 1.6) monkey(W / 2, my2, 1, { t, sq, rot: lt > 2.4 ? Math.sin((lt - 2.4) * 5) * .04 * Math.exp(-(lt - 2.4)) : 0 });
+  const mp = pop(lt, 5.3);
+  if (mp.a > 0) { tag('m = 14.6 kg', 1080, mY + 170, lt, 5.3, C.yel, { size: 40 }); }
+  // pulse ring at the knot
+  if (lt > 8.0) {
+    const u = ((lt - 8) % 1.1) / 1.1;
+    ctx.save(); ctx.strokeStyle = C.cyan; ctx.globalAlpha = (1 - u) * P(lt, 8, 8.3); ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.arc(W / 2, mY, 20 + u * 90, 0, 7); ctx.stroke(); ctx.restore();
+    ctx.fillStyle = C.cyan; ctx.beginPath(); ctx.arc(W / 2, mY, 10, 0, 7); ctx.fill();
+  }
+  ctx.restore();
+  caption([['猴子靜止不動 → ', C.wht], ['受力平衡', C.yel], ['（合力 = 0）', C.dim]], lt, 5.9, 8.0);
+  caption([['關鍵：分析 ', C.wht], ['繩子中點', C.cyan], ['（猴子抓的地方）的受力', C.wht]], lt, 8.0, 10.2);
+}
+
+// =====================================================================
+// SCENE 4 — free-body diagram (26–36)   and   SCENE 5 — components (36–46)
+// =====================================================================
+const PX = 960, PY = 560, LW = 160, LT = LW / (2 * Math.sin(TH));   // arrow lengths keep the true T/W ratio
+const ct = Math.cos(TH), st = Math.sin(TH);
+const RTx = PX + LT * ct, LTx = PX - LT * ct, TyY = PY - LT * st;   // tips
+const T4 = S.fbd, T5 = S.dec;
+cue(T4 + .3, 'pop', { n: 0 }); cue(T4 + 1.0, 'zap', { n: 0 }); cue(T4 + 2.2, 'zap', { n: 1 }); cue(T4 + 3.2, 'zap', { n: 2 });
+cue(T4 + 4.4, 'pop', { n: 2 }); cue(T4 + 6.6, 'pop', { n: 3 }); cue(T4 + 7.0, 'boing', { n: 1 });
+function fbdBase(t, tA, o = {}) {
+  const { wA = 1, tAl = 1, labels = 1, wLab = 1 } = o;
+  // rope continuing past the knot + ghost monkey
+  ctx.save(); ctx.globalAlpha = .45;
+  rope(PX, PY, PX - 1100 * ct, PY - 1100 * st, { w: 14 }); rope(PX, PY, PX + 1100 * ct, PY - 1100 * st, { w: 14 });
+  ctx.restore();
+  monkey(PX, PY, 1.25, { alpha: .16, t });
+  const tw = eOut(P(t, tA, tA + .6)), tl = eOut(P(t, tA + 1.2, tA + 1.8)), tr = eOut(P(t, tA + 2.2, tA + 2.8));
+  arrow(PX, PY, PX, PY + LW, C.red, { prog: tw, w: 12, alpha: wA });
+  arrow(PX, PY, LTx, TyY, C.cyan, { prog: tl, w: 12, alpha: tAl });
+  arrow(PX, PY, RTx, TyY, C.cyan, { prog: tr, w: 12, alpha: tAl });
+  const pw = pop(t, tA + .4), pl = pop(t, tA + 1.6), pr = pop(t, tA + 2.6);
+  txt('W = mg', PX + 40, PY + LW - 10, { size: 50, color: C.red, align: 'left', alpha: pw.a * labels * wA * wLab, scale: pw.s, glow: 16 });
+  txt('T', LTx - 10, TyY - 50, { size: 64, color: C.cyan, alpha: pl.a * labels * tAl, scale: pl.s, glow: 16 });
+  txt('T', RTx + 10, TyY - 50, { size: 64, color: C.cyan, alpha: pr.a * labels * tAl, scale: pr.s, glow: 16 });
+  // knot
+  const k = .5 + .5 * Math.sin(t * 6);
+  ctx.save(); ctx.fillStyle = C.wht; ctx.shadowColor = C.cyan; ctx.shadowBlur = 20 + 20 * k;
+  ctx.beginPath(); ctx.arc(PX, PY, 13, 0, 7); ctx.fill(); ctx.restore();
+}
+function sFbd(t) {
+  const lt = t - T4;
+  const zi = eOut(P(lt, 0, .6));
+  ctx.save(); ctx.translate(PX, PY); ctx.scale(lerp(1.4, 1, zi), lerp(1.4, 1, zi)); ctx.translate(-PX, -PY);
+  fbdBase(lt, 1.0);
+  ctx.restore();
+  tag('自由體圖', 110, 110, lt, .3, C.yel, { size: 44 });
+  txt('Free-Body Diagram', 112, 175, { size: 28, color: C.dim, weight: 700, align: 'left', alpha: P(lt, .6, 1) });
+  caption([['左右對稱 → 兩邊繩子的', C.wht], ['張力一樣大', C.cyan], ['，都是 T', C.wht]], lt, 4.4, 6.6);
+  caption([['W 往下，T 卻', C.wht], ['幾乎是水平', C.yel], ['的…怎麼平衡？', C.wht]], lt, 6.6, 10.2);
+  const q = pop(lt, 7.0);
+  txt('?', 1580, 300 + Math.sin(lt * 4) * 10, { size: 180, color: C.yel, alpha: q.a, scale: q.s, glow: 40, rot: Math.sin(lt * 3) * .15 });
+  txt('?', 340, 330 + Math.cos(lt * 4) * 10, { size: 120, color: C.cyan, alpha: pop(lt, 7.2).a, scale: pop(lt, 7.2).s, glow: 30, rot: -.2 });
+}
+
+cue(T5 + .3, 'pop', { n: 0 }); cue(T5 + .5, 'swish', { dur: .6 }); cue(T5 + 1.4, 'swish', { dur: .6 });
+cue(T5 + 1.2, 'pop', { n: 2 }); cue(T5 + 2.0, 'pop', { n: 4 });
+cue(T5 + 3.0, 'pop', { n: 1 }); cue(T5 + 4.0, 'ding');
+cue(T5 + 5.5, 'slide', { dur: 1.5 }); cue(T5 + 7.0, 'pop', { n: 3 }); cue(T5 + 7.6, 'ding', { n: 1 });
+impact(T5 + 8.3, 20);
+function sDec(t) {
+  const lt = t - T5;
+  fbdBase(lt, -10, { tAl: .35, labels: 1, wLab: 1 - P(lt, 6.6, 7.0) });
+  tag('把張力分解', 110, 110, lt, .3, C.yel, { size: 44 });
+  // projections
+  const pj = P(lt, .5, 1.0);
+  dashLine(RTx, TyY, RTx, PY, C.dim, { prog: pj }); dashLine(LTx, TyY, LTx, PY, C.dim, { prog: pj });
+  // horizontal components (fade after they cancel)
+  const hx = eOut(P(lt, .6, 1.3));
+  const hPulse = lt > 3.2 && lt < 4.0 ? 1 + .25 * Math.sin((lt - 3.2) * 20) : 1;
+  const hA = lerp(1, .22, P(lt, 4.4, 5.0));
+  arrow(PX, PY, RTx, PY, C.lcyan, { prog: hx, w: 8 * hPulse, alpha: hA, head: 30 });
+  arrow(PX, PY, LTx, PY, C.lcyan, { prog: hx, w: 8 * hPulse, alpha: hA, head: 30 });
+  const ph = pop(lt, 1.2);
+  txt('T cos θ', (PX + RTx) / 2 + 60, PY + 44, { size: 40, color: C.lcyan, alpha: ph.a * hA, scale: ph.s });
+  txt('T cos θ', (PX + LTx) / 2 - 60, PY + 44, { size: 40, color: C.lcyan, alpha: ph.a * hA, scale: ph.s });
+  // vertical components: drawn at the projections, then slide to the knot and stack
+  const vy = eOut(P(lt, 1.4, 2.0)), sl = eIO(P(lt, 5.5, 7.0));
+  const rx = lerp(RTx, PX, sl), lx = lerp(LTx, PX, sl), ly0 = lerp(PY, PY - LT * st, sl);
+  arrow(rx, PY, rx, PY - LT * st, C.pur, { prog: vy, w: 10, head: 26 });
+  arrow(lx, ly0, lx, ly0 - LT * st, C.pur, { prog: vy, w: 10, head: 26 });
+  const pv = pop(lt, 2.0), la = 1 - P(lt, 5.4, 5.7);
+  txt('T sin θ', RTx + 22, PY - 40, { size: 40, color: C.pur, align: 'left', alpha: pv.a * la, scale: pv.s });
+  txt('T sin θ', LTx - 22, PY - 40, { size: 40, color: C.pur, align: 'right', alpha: pv.a * la, scale: pv.s });
+  // cancel badge
+  const cb = pop(lt, 3.9);
+  if (cb.a > 0) {
+    check(1500, 660, 70 * cb.s, C.grn, P(lt, 3.95, 4.3));
+    txt('水平抵消', 1560, 660, { size: 44, color: C.grn, align: 'left', alpha: cb.a, glow: 16 });
+  }
+  // brackets: 2T sinθ (up) vs mg (down)
+  const bk = pop(lt, 7.0);
+  if (bk.a > 0) {
+    ctx.save(); ctx.globalAlpha = bk.a; ctx.lineWidth = 4;
+    ctx.strokeStyle = C.pur; ctx.beginPath(); ctx.moveTo(PX + 40, PY - 2 * LT * st); ctx.lineTo(PX + 60, PY - 2 * LT * st); ctx.lineTo(PX + 60, PY - 4); ctx.lineTo(PX + 40, PY - 4); ctx.stroke();
+    ctx.strokeStyle = C.red; ctx.beginPath(); ctx.moveTo(PX + 40, PY + 4); ctx.lineTo(PX + 60, PY + 4); ctx.lineTo(PX + 60, PY + LW); ctx.lineTo(PX + 40, PY + LW); ctx.stroke();
+    ctx.restore();
+    txt('2T sin θ', PX + 80, PY - LW / 2, { size: 44, color: C.pur, align: 'left', alpha: bk.a, scale: bk.s, glow: 14 });
+    txt('mg', PX + 80, PY + LW / 2, { size: 44, color: C.red, align: 'left', alpha: bk.a, scale: bk.s, glow: 14 });
+  }
+  const eqb = pop(lt, 7.6);
+  if (eqb.a > 0) {
+    ctx.save(); ctx.globalAlpha = eqb.a; ctx.translate(PX + 420, PY); ctx.scale(eqb.s, eqb.s);
+    rrect(-120, -40, 240, 80, 40, 'rgba(10,14,36,.92)', C.grn, 3); ctx.restore();
+    txt('一樣長！', PX + 420, PY + 2, { size: 44, color: C.grn, alpha: eqb.a, scale: eqb.s, glow: 16 });
+  }
+  // big equation
+  const be = P(lt, 8.3, 8.55);
+  if (be > 0) {
+    ctx.save(); ctx.globalAlpha = be;
+    rrect(560, 205, 800, 130, 26, 'rgba(10,14,36,.9)', C.yel, 4); ctx.restore();
+    rich([['2T sin θ', C.pur], [' = ', C.wht], ['mg', C.red]], W / 2, 272, { size: 92, scale: lerp(1.8, 1, eOut(be)), alpha: be, glow: 20 });
+  }
+  caption([['水平：', C.yel], ['左右的 T cos θ 一樣大、方向相反 → ', C.wht], ['抵消！', C.grn]], lt, 3.0, 5.4);
+  caption([['垂直：', C.yel], ['兩個 T sin θ 加起來 = ', C.wht], ['猴子的重量 mg', C.red]], lt, 5.5, 10.2);
+}
+
+// =====================================================================
+// SCENE 6 — calculation (46–58)
+// =====================================================================
+const T6 = S.calc;
+cue(T6 + .2, 'pop', { n: 0 }); cue(T6 + 1.0, 'whoosh', { dur: .4 }); cue(T6 + 2.6, 'pop', { n: 2 });
+cue(T6 + 4.2, 'pop', { n: 3 }); cue(T6 + 4.8, 'pop', { n: 4 }); cue(T6 + 6.2, 'pop', { n: 5 });
+for (let k = 0; k < 26; k++) cue(T6 + 7.4 + k * .06, 'count', { n: k });
+impact(T6 + 9.0, 24, 'stamp'); cue(T6 + 9.7, 'pop', { n: 6 });
+function frac(num, den, x, y, size, o = {}) {
+  const { alpha = 1, scale = 1, ncol = C.wht, dcol = C.wht } = o;
+  if (alpha <= 0) return 0;
+  ctx.font = font(size); const wn = ctx.measureText(num).width, wd = ctx.measureText(den).width, bw = Math.max(wn, wd) + 30;
+  ctx.save(); ctx.globalAlpha *= alpha; ctx.translate(x, y); ctx.scale(scale, scale);
+  ctx.fillStyle = C.wht; ctx.fillRect(0, -3, bw, 6);
+  ctx.restore();
+  txt(num, x + bw / 2 * scale, y - size * .62 * scale, { size, color: ncol, alpha, scale });
+  txt(den, x + bw / 2 * scale, y + size * .66 * scale, { size, color: dcol, alpha, scale });
+  return bw;
+}
+function sCalc(t) {
+  const lt = t - T6;
+  const e1 = pop(lt, .2);
+  rich([['2T sin θ', C.pur], [' = ', C.wht], ['mg', C.red]], 640, 150, { size: 70, alpha: e1.a, scale: e1.s, glow: 12 });
+  const e2 = P(lt, 1.0, 1.4), x2 = lerp(-200, 0, eOut(e2));
+  txt('T =', 560 + x2, 330, { size: 80, align: 'right', alpha: e2 });
+  frac('mg', '2 sin θ', 590 + x2, 330, 72, { alpha: e2, ncol: C.red, dcol: C.pur });
+  const e3 = pop(lt, 2.6);
+  txt('T =', 360, 560, { size: 72, align: 'right', alpha: e3.a, scale: e3.s });
+  frac('(14.6)(9.8)', '2 × sin 11.0°', 390, 560, 64, { alpha: e3.a, ncol: C.red, dcol: C.pur });
+  // side notes
+  const n1 = pop(lt, 4.2), n2 = pop(lt, 4.8);
+  if (n1.a > 0) { ctx.save(); ctx.globalAlpha = n1.a; rrect(1100, 215, 760, 100, 20, 'rgba(255,93,115,.12)', C.red, 3); ctx.restore(); }
+  rich([['mg = 14.6 × 9.8 ≈ ', C.wht], ['143.1 N', C.red]], 1480, 266, { size: 46, alpha: n1.a, scale: n1.s });
+  if (n2.a > 0) { ctx.save(); ctx.globalAlpha = n2.a; rrect(1100, 345, 760, 100, 20, 'rgba(182,156,255,.12)', C.pur, 3); ctx.restore(); }
+  rich([['2 sin 11.0° ≈ 2 × 0.1908 = ', C.wht], ['0.3816', C.pur]], 1480, 396, { size: 38, alpha: n2.a, scale: n2.s });
+  const e4 = pop(lt, 6.2);
+  txt('T =', 360, 790, { size: 72, align: 'right', alpha: e4.a, scale: e4.s });
+  frac('143.1', '0.3816', 390, 790, 64, { alpha: e4.a, ncol: C.red, dcol: C.pur });
+  // result counter + stamp
+  if (lt > 7.2) {
+    const a = P(lt, 7.2, 7.4);
+    ctx.save(); ctx.globalAlpha = a; rrect(1060, 560, 820, 360, 30, 'rgba(10,14,36,.92)', 'rgba(255,210,63,.5)', 3); ctx.restore();
+    txt('張力 T', 1470, 620, { size: 40, color: C.dim, weight: 700, alpha: a });
+    if (lt < 9.0) {
+      const v = TEN * eOut(P(lt, 7.4, 9.0));
+      txt(v.toFixed(1) + ' N', 1470, 760, { size: 120, color: C.wht, alpha: a });
+    } else {
+      const u = P(lt, 9.0, 9.18);
+      rich([['T ≈ ', C.wht], ['375 N', C.yel]], 1470, 750, { size: 120, scale: lerp(2.4, 1, eOut(u)), alpha: u, glow: 30, rot: -.04 });
+      const s2 = pop(lt, 9.7);
+      txt('（精確值 374.9 N ≈ 3.75 × 10² N）', 1470, 860, { size: 32, color: C.dim, weight: 700, alpha: s2.a, scale: s2.s });
+    }
+  }
+}
+
+// =====================================================================
+// SCENE 7 — compare with the weight (58–66)
+// =====================================================================
+const T7 = S.cmp, BASE = 860, PXN = 1.3;
+cue(T7 + .2, 'pop', { n: 0 }); cue(T7 + .8, 'grow', { dur: .8, f: 1 }); cue(T7 + 2.0, 'grow', { dur: 1.2, f: 1.6 });
+[0, 1, 2].forEach(k => cue(T7 + 3.7 + k * .3, 'pop', { n: 2 + k * 2 }));
+cue(T7 + 4.6, 'pop', { n: 1 }); impact(T7 + 5.2, 26, 'boom'); cue(T7 + 5.2, 'sparkle');
+const CONF = (() => { const r = mulberry(7); return [...Array(140)].map(() => ({ a: r() * Math.PI * 2, v: 500 + r() * 1100, c: [C.yel, C.cyan, C.red, C.grn, C.pur][Math.floor(r() * 5)], s: 8 + r() * 12, sp: (r() - .5) * 18 })); })();
+function confetti(lt0) {
+  if (lt0 < 0 || lt0 > 3) return;
+  for (const p of CONF) {
+    const x = W / 2 + Math.cos(p.a) * p.v * lt0 * .9, y = 500 + Math.sin(p.a) * p.v * lt0 * .7 + 700 * lt0 * lt0;
+    ctx.save(); ctx.globalAlpha = 1 - lt0 / 3; ctx.translate(x, y); ctx.rotate(p.sp * lt0); ctx.fillStyle = p.c;
+    ctx.fillRect(-p.s / 2, -p.s / 4, p.s, p.s / 2); ctx.restore();
+  }
+}
+function bar(x, h, color, label, val, a) {
+  ctx.save(); ctx.shadowColor = color; ctx.shadowBlur = 30;
+  const g = ctx.createLinearGradient(0, BASE - h, 0, BASE); g.addColorStop(0, color); g.addColorStop(1, 'rgba(255,255,255,.08)');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(x - 110, BASE - h, 220, h, [16, 16, 0, 0]); ctx.fill(); ctx.restore();
+  txt(label, x, BASE + 50, { size: 42, weight: 700, alpha: a });
+  if (h > 2) txt(val, x, BASE - h - 44, { size: 54, color, glow: 16 });
+}
+function sCmp(t) {
+  const lt = t - T7;
+  const tp = pop(lt, .2);
+  txt('跟猴子的重量比一比', W / 2, 105, { size: 70, alpha: tp.a, scale: tp.s });
+  ctx.strokeStyle = 'rgba(200,210,255,.4)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(420, BASE); ctx.lineTo(1500, BASE); ctx.stroke();
+  const gw = eOut(P(lt, .8, 1.6)), gt = eOut(P(lt, 2.0, 3.2));
+  const XW = 700, XT = 1220;
+  bar(XW, WT * PXN * gw, C.red, '猴子重量 W', Math.round(WT * gw) + ' N', P(lt, .5, .8));
+  bar(XT, TEN * PXN * gt, C.cyan, '繩子張力 T', Math.round(TEN * gt) + ' N', P(lt, 1.7, 2.0));
+  monkey(XW - 200, BASE - 230, .55, { t, alpha: P(lt, .5, .9) });
+  // stack W-sized blocks along the T bar
+  [1, 2, 2.62].forEach((m, k) => {
+    const p = pop(lt, 3.7 + k * .3); if (p.a <= 0) return;
+    const y0 = BASE - WT * PXN * Math.min(m, k + 1), y1 = BASE - WT * PXN * k;
+    ctx.save(); ctx.globalAlpha = p.a; ctx.setLineDash([10, 8]); ctx.strokeStyle = C.red; ctx.lineWidth = 4;
+    ctx.strokeRect(XT - 130, y0, 260, y1 - y0); ctx.restore();
+    txt(k < 2 ? `${k + 1} W` : '2.62 W', XT + 170, (y0 + y1) / 2, { size: 40, color: C.red, align: 'left', alpha: p.a, scale: p.s });
+  });
+  const fp = pop(lt, 4.6);
+  rich([['T / W = 1 / (2 sin 11.0°) ≈ ', C.wht], ['2.62', C.yel]], W / 2, 195, { size: 46, alpha: fp.a, scale: fp.s, glow: 12 });
+  // slam banner
+  const sb = P(lt, 5.2, 5.38);
+  if (sb > 0) {
+    ctx.save(); ctx.translate(W / 2, 520); ctx.rotate(-.05); ctx.globalAlpha = sb;
+    ctx.fillStyle = 'rgba(8,10,30,.88)'; ctx.fillRect(-1100, -105, 2200, 210);
+    ctx.fillStyle = C.yel; ctx.fillRect(-1100, -105, 2200, 8); ctx.fillRect(-1100, 97, 2200, 8);
+    ctx.restore();
+    rich([['張力 ≈ ', C.wht], ['2.6 倍', C.yel], [' 猴子的重量！', C.wht]], W / 2, 518, { size: 110, scale: lerp(2.5, 1, eOut(sb)), alpha: sb, glow: 30, rot: -.05 });
+  }
+  confetti(lt - 5.2);
+}
+
+// =====================================================================
+// SCENE 8 — why so big? θ sweep (66–76)
+// =====================================================================
+const T8 = S.why, GX = 1060, GY = 820, GW = 720, GH = 520;
+const thAt = lt => (lt < 1.2 ? 45 : lt > 6.0 ? 5 : lerp(45, 5, eIO(P(lt, 1.2, 6.0))));
+const ratio = d => 1 / (2 * Math.sin(d * Math.PI / 180));
+cue(T8 + .2, 'pop', { n: 0 }); cue(T8 + .6, 'swish', { dur: 1 }); cue(T8 + 1.8, 'pop', { n: 4 });
+// pitch-follow sweep: sample T/W at 100 Hz so the tone tracks the picture exactly
+cue(T8 + 1.2, 'sweep', { rate: 100, vals: [...Array(481)].map((_, i) => +ratio(thAt(1.2 + i / 100)).toFixed(4)) });
+impact(T8 + 6.4, 18); cue(T8 + 8.0, 'pop', { n: 5 });
+const gx = d => GX + d / 60 * GW, gy = r => GY - r / 6 * GH;
+function sWhy(t) {
+  const lt = t - T8;
+  const tp = pop(lt, .2);
+  txt('為什麼這麼大？', W / 2, 110, { size: 72, color: C.yel, alpha: tp.a, scale: tp.s, glow: 20 });
+  const th = thAt(lt), r = ratio(th), thr = th * Math.PI / 180;
+  // mini scene (left)
+  const A = 200, B = 840, Y0 = 330, half = 320, sg = half * Math.tan(thr), mx = (A + B) / 2, my = Y0 + sg;
+  const a0 = P(lt, .2, .6);
+  ctx.save(); ctx.globalAlpha = a0;
+  post(A, Y0, 900); post(B, Y0, 900);
+  rope(A, Y0, mx, my); rope(B, Y0, mx, my);
+  monkey(mx, my, .55, { t });
+  const L = Math.min(40 * r, 330), over = 40 * r > 330;
+  arrow(mx, my, mx - L * Math.cos(thr), my - L * Math.sin(thr), over ? C.red : C.cyan, { w: 9, head: 28, glow: over ? 40 : 20 });
+  arrow(mx, my, mx + L * Math.cos(thr), my - L * Math.sin(thr), over ? C.red : C.cyan, { w: 9, head: 28, glow: over ? 40 : 20 });
+  ctx.restore();
+  rich([['θ = ', C.wht], [th.toFixed(0) + '°', C.yel]], 520, 230, { size: 52, alpha: a0 });
+  // graph (right)
+  const ga = P(lt, .5, .9);
+  ctx.save(); ctx.globalAlpha = ga; ctx.strokeStyle = 'rgba(220,228,255,.7)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(GX, GY - GH - 20); ctx.lineTo(GX, GY); ctx.lineTo(GX + GW + 20, GY); ctx.stroke();
+  ctx.strokeStyle = 'rgba(220,228,255,.12)'; ctx.lineWidth = 1;
+  for (let k = 1; k <= 6; k++) { ctx.beginPath(); ctx.moveTo(GX, gy(k)); ctx.lineTo(GX + GW, gy(k)); ctx.stroke(); }
+  ctx.restore();
+  for (let k = 0; k <= 60; k += 15) txt(k + '°', gx(k), GY + 34, { size: 28, color: C.dim, weight: 700, alpha: ga });
+  for (let k = 1; k <= 6; k++) txt(String(k), GX - 26, gy(k), { size: 28, color: C.dim, weight: 700, alpha: ga });
+  txt('T / W', GX, GY - GH - 50, { size: 34, color: C.cyan, alpha: ga });
+  txt('θ', GX + GW + 50, GY, { size: 38, color: C.yel, alpha: ga });
+  const cp = eOut(P(lt, .6, 1.6));
+  if (cp > 0) {
+    const d0 = 60 - (60 - 4.8) * cp;
+    ctx.save(); ctx.strokeStyle = C.cyan; ctx.lineWidth = 6; ctx.shadowColor = C.cyan; ctx.shadowBlur = 18; ctx.beginPath();
+    for (let d = 60; d >= d0; d -= .2) { const x = gx(d), y = gy(ratio(d)); d === 60 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); }
+    ctx.stroke(); ctx.restore();
+  }
+  // this problem's point
+  const mp = pop(lt, 1.8);
+  if (mp.a > 0) {
+    ctx.save(); ctx.globalAlpha = mp.a; ctx.fillStyle = C.yel; ctx.shadowColor = C.yel; ctx.shadowBlur = 20;
+    ctx.beginPath(); ctx.arc(gx(11), gy(ratio(11)), 12 * mp.s, 0, 7); ctx.fill(); ctx.restore();
+    dashLine(gx(11), gy(ratio(11)), gx(11), GY, C.yel, { alpha: mp.a * .6, w: 2 });
+    txt('本題：11.0° → 2.62 W', gx(11) + 30, gy(ratio(11)) - 10, { size: 34, color: C.yel, align: 'left', alpha: mp.a, scale: mp.s });
+  }
+  // moving dot
+  if (lt > 1.0) {
+    const x = gx(th), y = gy(Math.min(r, 6));
+    ctx.save(); ctx.fillStyle = C.wht; ctx.shadowColor = C.cyan; ctx.shadowBlur = 30; ctx.beginPath(); ctx.arc(x, y, 14, 0, 7); ctx.fill(); ctx.restore();
+    rich([['T = ', C.wht], [r.toFixed(2) + ' W', r > 3 ? C.red : C.cyan]], x + 34, y - 44, { size: 36, align: 'left' });
+  }
+  caption([['繩子越接近', C.wht], ['水平', C.yel], ['，張力就', C.wht], ['越大', C.red], ['！拉不成完全水平', C.wht]], lt, 6.4, 10.2);
+  const inf = pop(lt, 8.0);
+  rich([['θ → 0°   ⇒   ', C.wht], ['T → ∞', C.red]], 1420, 210, { size: 50, alpha: inf.a, scale: inf.s, glow: 18 });
+}
+
+// =====================================================================
+// SCENE 9 — answer card (76–82)
+// =====================================================================
+const T9 = S.end;
+cue(T9 + .3, 'pop', { n: 0 }); cue(T9 + .6, 'ding', { n: 2 }); cue(T9 + 1.0, 'pop', { n: 2 }); cue(T9 + 1.8, 'pop', { n: 4 });
+cue(T9 + 3.2, 'sparkle'); cue(T9 + 3.2, 'pop', { n: 6 }); cue(T9 + 4.6, 'end');
+function sEnd(t) {
+  const lt = t - T9;
+  const ca = eOut(P(lt, 0, .4));
+  ctx.save(); ctx.globalAlpha = ca; ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 40;
+  rrect(310, 200, 1300, 560, 32, 'rgba(16,24,58,.92)', null); ctx.shadowBlur = 0;
+  rrect(310, 200, 1300, 560, 32, null, 'rgba(255,210,63,.6)', 3); ctx.restore();
+  tag('解答', 350, 200, lt, .15, C.grn);
+  const l1 = pop(lt, .3);
+  rich([['T ≈ ', C.wht], ['375 N', C.yel]], 1010, 380, { size: 120, alpha: l1.a, scale: l1.s, glow: 26 });
+  check(640, 380, 110, C.grn, P(lt, .6, 1.0));
+  const l2 = pop(lt, 1.0);
+  rich([['約為猴子重量（143 N）的 ', C.wht], ['2.6 倍', C.red]], W / 2, 545, { size: 58, alpha: l2.a, scale: l2.s, glow: 14 });
+  const l3 = pop(lt, 1.8);
+  rich([['T = mg / (2 sin θ)', C.cyan], ['：角度越小，張力越大', C.dim]], W / 2, 665, { size: 40, weight: 700, alpha: l3.a, scale: l3.s });
+  const l4 = pop(lt, 3.2);
+  txt('下一題見！', W / 2, 890, { size: 80, color: C.yel, alpha: l4.a, scale: l4.s, glow: 30 });
+  monkey(1660, lerp(1250, 740, eBack(P(lt, 3.0, 3.6))), .9, { t, wave: true, rot: -.1 });
+}
+
+// =====================================================================
+const SCENES = [[0, sHook], [6, sProb], [16, sSetup], [26, sFbd], [36, sDec], [46, sCalc], [58, sCmp], [66, sWhy], [76, sEnd]];
+function renderFrame(f) {
+  const t = f / FPS;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  background(t);
+  const [dx, dy] = shake(t);
+  ctx.save(); ctx.translate(dx, dy);
+  let sc = SCENES[0][1]; for (const [s, fn] of SCENES) if (t >= s) sc = fn;
+  sc(t);
+  ctx.restore();
+  const fl = flash(t); if (fl > 0) { ctx.fillStyle = `rgba(255,255,255,${fl})`; ctx.fillRect(0, 0, W, H); }
+  transition(t);
+  postFX(f);
+  // fade in / out
+  const fade = Math.max(1 - P(t, 0, .3), P(t, DUR - .8, DUR));
+  if (t < .25) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
+  else if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, W, H); }
+}
+CUES.sort((a, b) => a.t - b.t);
+window.CUES = CUES; window.DUR = DUR; window.FPS = FPS;
+window.READY = Promise.all(['500', '700', '900'].map(w => document.fonts.load(`${w} 40px NotoTC`, '題猴子繩θ°²→≈×'))).then(() => document.fonts.ready);
+</script></body></html>
