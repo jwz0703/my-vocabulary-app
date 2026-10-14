@@ -1,0 +1,1111 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>海洋天空模擬</title>
+<style>
+  :root {
+    --panel: rgba(10, 16, 28, 0.62);
+    --panel-border: rgba(255, 255, 255, 0.12);
+    --text: #e8eef7;
+    --muted: #9fb0c6;
+    --accent: #ffcf6e;
+    --accent2: #8fc8ff;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #02040a; color: var(--text); overflow: hidden;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+  canvas#c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+  canvas#c:active { cursor: grabbing; }
+  .panel { position: fixed; background: var(--panel); border: 1px solid var(--panel-border); border-radius: 12px;
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); padding: 10px 12px; }
+  #info { top: 12px; left: 12px; min-width: 230px; }
+  #info h1 { font-size: 14px; margin: 0 0 6px; font-weight: 600; letter-spacing: .02em; }
+  #info .row { display: flex; justify-content: space-between; gap: 14px; color: var(--muted); }
+  #info .row b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+  #info .sep { height: 1px; background: var(--panel-border); margin: 6px 0; }
+  #moonIcon { width: 34px; height: 34px; float: right; margin: -2px 0 0 8px; }
+  #settings { top: 12px; right: 12px; width: 250px; max-height: calc(100% - 190px); overflow: auto; }
+  #settings summary { cursor: pointer; font-weight: 600; font-size: 13px; list-style: none; }
+  #settings summary::after { content: " ▾"; color: var(--muted); }
+  #settings details:not([open]) summary::after { content: " ▸"; }
+  .field { margin-top: 8px; }
+  .field label { display: flex; justify-content: space-between; color: var(--muted); margin-bottom: 2px; }
+  .field label span { color: var(--text); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--accent2); }
+  select, input[type=number], input[type=date], button {
+    background: rgba(255,255,255,0.08); color: var(--text); border: 1px solid var(--panel-border);
+    border-radius: 8px; padding: 5px 8px; font: inherit; }
+  select option { background: #111a2a; }
+  button { cursor: pointer; }
+  button:hover { background: rgba(255,255,255,0.16); }
+  button.on { background: rgba(255, 207, 110, 0.25); border-color: rgba(255, 207, 110, 0.6); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grid2 input { width: 100%; }
+  #timebar { left: 50%; transform: translateX(-50%); bottom: 12px; width: min(920px, calc(100% - 24px)); }
+  #timebar .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #clock { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: .03em; min-width: 98px; }
+  #tzlabel { color: var(--muted); }
+  .spacer { flex: 1; }
+  .slider-wrap { position: relative; margin-top: 8px; }
+  .slider-wrap .cap { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+  .track { position: relative; height: 26px; }
+  .track .grad { position: absolute; left: 0; right: 0; top: 9px; height: 8px; border-radius: 4px; }
+  .track .marks { position: absolute; inset: 0; pointer-events: none; }
+  .track .mk { position: absolute; top: 0; width: 1px; height: 26px; transform: translateX(-0.5px); }
+  .track .mk i { position: absolute; top: -1px; left: 3px; font-style: normal; font-size: 10px; white-space: nowrap; color: var(--muted); }
+  .track input[type=range] { position: absolute; left: 0; right: 0; top: 0; height: 26px; margin: 0; background: transparent;
+    -webkit-appearance: none; appearance: none; }
+  .track input[type=range]::-webkit-slider-runnable-track { height: 26px; background: transparent; }
+  .track input[type=range]::-moz-range-track { height: 26px; background: transparent; }
+  .track input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 26px; border-radius: 7px;
+    background: #fff; border: 2px solid #0b1424; box-shadow: 0 0 0 1px rgba(255,255,255,.5), 0 2px 8px rgba(0,0,0,.5); }
+  .track input[type=range]::-moz-range-thumb { width: 12px; height: 24px; border-radius: 7px; background: #fff; border: 2px solid #0b1424; }
+  #hint { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); color: rgba(255,255,255,.55); font-size: 12px;
+    pointer-events: none; transition: opacity 1s; text-shadow: 0 1px 3px #000; }
+  #err { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; padding: 24px; text-align: center; font-size: 15px; }
+  @media (max-width: 720px) {
+    #info { min-width: 0; width: calc(50% - 18px); font-size: 11px; padding: 8px; }
+    #info h1 { font-size: 12px; }
+    #moonIcon { display: none; }
+    #settings { width: calc(50% - 18px); font-size: 11px; padding: 8px; max-height: calc(100% - 260px); }
+    #clock { font-size: 18px; min-width: 80px; }
+    #hint { display: none; }
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">拖曳旋轉視角 · 滾輪縮放 · 空白鍵播放/暫停</div>
+
+<div id="info" class="panel">
+  <svg id="moonIcon" viewBox="-1 -1 2 2"><circle r="1" fill="#1d2433"/><path id="moonPath" fill="#f3efe2"/></svg>
+  <h1>天文資訊</h1>
+  <div class="row">太陽高度 <b id="sunAlt">–</b></div>
+  <div class="row">太陽方位 <b id="sunAz">–</b></div>
+  <div class="row">日出 / 日落 <b id="sunRS">–</b></div>
+  <div class="sep"></div>
+  <div class="row">月相 <b id="moonPhase">–</b></div>
+  <div class="row">照亮比例 <b id="moonIllum">–</b></div>
+  <div class="row">月齡 <b id="moonAge">–</b></div>
+  <div class="row">月球高度 <b id="moonAlt">–</b></div>
+  <div class="row">月球方位 <b id="moonAz">–</b></div>
+  <div class="row">月出 / 月落 <b id="moonRS">–</b></div>
+  <div class="sep"></div>
+  <div class="row">天空狀態 <b id="skyState">–</b></div>
+  <div class="row">地方恆星時 <b id="lst">–</b></div>
+</div>
+
+<div id="settings" class="panel">
+  <details open>
+    <summary>設定</summary>
+    <div class="field">
+      <label>地點</label>
+      <select id="preset" style="width:100%"></select>
+    </div>
+    <div class="field grid2">
+      <div><label>緯度</label><input id="lat" type="number" step="0.01" min="-89.9" max="89.9"></div>
+      <div><label>經度</label><input id="lon" type="number" step="0.01" min="-180" max="180"></div>
+    </div>
+    <div class="field">
+      <label>時區 (UTC±) <span id="tzv"></span></label>
+      <input id="tz" type="range" min="-12" max="14" step="0.5">
+    </div>
+    <div class="field">
+      <label>浪高 <span id="ampv"></span></label>
+      <input id="amp" type="range" min="0.1" max="3" step="0.05" value="0.7">
+    </div>
+    <div class="field">
+      <label>浪尖銳度 <span id="chopv"></span></label>
+      <input id="chop" type="range" min="1" max="4" step="0.1" value="2.2">
+    </div>
+    <div class="field">
+      <label>風向 <span id="windv"></span></label>
+      <input id="wind" type="range" min="0" max="359" step="1" value="200">
+    </div>
+    <div class="field">
+      <label>視角高度 <span id="camhv"></span></label>
+      <input id="camh" type="range" min="1.5" max="60" step="0.5" value="4">
+    </div>
+    <div class="field">
+      <label>視野 (FOV) <span id="fovv"></span></label>
+      <input id="fov" type="range" min="4" max="100" step="1" value="62">
+    </div>
+    <div class="field">
+      <label>日月顯示大小 <span id="diskv"></span></label>
+      <input id="disk" type="range" min="1" max="6" step="0.1" value="1">
+    </div>
+    <div class="field">
+      <label>畫質</label>
+      <select id="quality" style="width:100%">
+        <option value="1">高</option>
+        <option value="0.75" selected>中</option>
+        <option value="0.5">低</option>
+      </select>
+    </div>
+    <div class="field grid2">
+      <button id="lookSun">看太陽</button>
+      <button id="lookMoon">看月亮</button>
+    </div>
+  </details>
+</div>
+
+<div id="timebar" class="panel">
+  <div class="top">
+    <div id="clock">--:--</div>
+    <div id="tzlabel"></div>
+    <input id="date" type="date">
+    <button id="dayPrev" title="前一天">◀ 日</button>
+    <button id="dayNext" title="後一天">日 ▶</button>
+    <div class="spacer"></div>
+    <button id="play" title="播放 / 暫停 (空白鍵)">▶ 播放</button>
+    <select id="speed" title="時間流速">
+      <option value="1">1× 真實時間</option>
+      <option value="60">60× (1 秒 = 1 分)</option>
+      <option value="600" selected>600× (1 秒 = 10 分)</option>
+      <option value="3600">3600× (1 秒 = 1 時)</option>
+      <option value="21600">21600× (1 秒 = 6 時)</option>
+      <option value="86400">86400× (1 秒 = 1 天)</option>
+    </select>
+    <button id="now">現在</button>
+  </div>
+  <div class="slider-wrap">
+    <div class="cap"><span>時間控制桿</span><span id="timeCap"></span></div>
+    <div class="track">
+      <div class="grad" id="timeGrad"></div>
+      <div class="marks" id="timeMarks"></div>
+      <input id="time" type="range" min="0" max="1439" step="1" value="720" aria-label="時間控制桿">
+    </div>
+  </div>
+  <div class="slider-wrap">
+    <div class="cap"><span>日期控制桿（一年）</span><span id="dateCap"></span></div>
+    <div class="track">
+      <div class="grad" id="dateGrad"></div>
+      <div class="marks" id="dateMarks"></div>
+      <input id="doy" type="range" min="0" max="364" step="1" value="0" aria-label="日期控制桿">
+    </div>
+  </div>
+</div>
+
+<div id="err" class="panel"></div>
+
+<script>
+'use strict';
+// ════════════════════════════════════════════════════════════════════════
+//  Photometric scale (shared by CPU + GPU). Units are arbitrary but every
+//  light source keeps its real ratio to the Sun.
+// ════════════════════════════════════════════════════════════════════════
+const E_SUN = 20.0;                        // solar irradiance
+const OMEGA_DISK = 6.8e-5;                 // solid angle of sun / moon disk (sr)
+const SUN_RAD = E_SUN / OMEGA_DISK;        // radiance of the solar disk
+const MOON_RATIO = 2.5e-6;                 // full moon / sun illuminance (≈ 14 mag)
+const MOON_FULL_RAD = SUN_RAD * MOON_RATIO;
+const NIGHT_BASE = 6e-8;                   // airglow + unresolved starlight
+const MILKY_RAD = 2.4e-7;
+
+// ════════════════════════════════════════════════════════════════════════
+//  Astronomy (low-precision analytical theories; ~0.01° sun, ~0.3° moon)
+//  World frame: +x east, +y up, +z south.
+// ════════════════════════════════════════════════════════════════════════
+const RAD = Math.PI / 180, DEG = 180 / Math.PI;
+const OBLIQ = 23.4397 * RAD;
+const daysJ2000 = ms => ms / 86400000 + 2440587.5 - 2451545.0;
+
+function sunEcl(d) {
+  const M = RAD * (357.5291 + 0.98560028 * d);
+  const C = RAD * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M));
+  return { lon: M + C + RAD * 102.9372 + Math.PI, lat: 0, dist: 1.496e8 };
+}
+function moonEcl(d) {
+  const L = RAD * (218.316 + 13.176396 * d);
+  const M = RAD * (134.963 + 13.064993 * d);
+  const F = RAD * (93.272 + 13.229350 * d);
+  const D = RAD * (297.850 + 12.190749 * d);
+  const Ms = RAD * (357.529 + 0.98560028 * d);
+  const lon = L + RAD * (6.289 * Math.sin(M) + 1.274 * Math.sin(2 * D - M) + 0.658 * Math.sin(2 * D)
+    + 0.214 * Math.sin(2 * M) - 0.186 * Math.sin(Ms) - 0.114 * Math.sin(2 * F));
+  const lat = RAD * (5.128 * Math.sin(F) + 0.281 * Math.sin(M + F) + 0.278 * Math.sin(M - F) + 0.173 * Math.sin(2 * D - F));
+  const dist = 385001 - 20905 * Math.cos(M) - 3699 * Math.cos(2 * D - M) - 2956 * Math.cos(2 * D);
+  return { lon, lat, dist };
+}
+function eclToEq(lon, lat) {
+  const ra = Math.atan2(Math.sin(lon) * Math.cos(OBLIQ) - Math.tan(lat) * Math.sin(OBLIQ), Math.cos(lon));
+  const dec = Math.asin(Math.sin(lat) * Math.cos(OBLIQ) + Math.cos(lat) * Math.sin(OBLIQ) * Math.sin(lon));
+  return { ra, dec };
+}
+const eqVec = (ra, dec) => [Math.cos(dec) * Math.cos(ra), Math.cos(dec) * Math.sin(ra), Math.sin(dec)];
+const localSidereal = (d, lonDeg) => RAD * (280.16 + 360.9856235 * d) + lonDeg * RAD;
+
+// equatorial (ra, dec) → world unit vector
+function eqToWorld(ra, dec, lst, lat) {
+  const H = lst - ra, cd = Math.cos(dec), sd = Math.sin(dec), cl = Math.cos(lat), sl = Math.sin(lat);
+  const east = -cd * Math.sin(H);
+  const north = cl * sd - sl * cd * Math.cos(H);
+  const up = sl * sd + cl * cd * Math.cos(H);
+  return [east, up, -north];
+}
+const altOf = v => Math.asin(Math.max(-1, Math.min(1, v[1])));
+const azOf = v => { const a = Math.atan2(v[0], -v[2]); return a < 0 ? a + 2 * Math.PI : a; };
+const fromAltAz = (alt, az) => [Math.sin(az) * Math.cos(alt), Math.sin(alt), -Math.cos(az) * Math.cos(alt)];
+// Sæmundsson refraction, true → apparent altitude (degrees)
+function refract(altDeg) {
+  if (altDeg < -2) return altDeg;
+  const h = Math.max(altDeg, -1.9);
+  return altDeg + 1.02 / Math.tan(RAD * (h + 10.3 / (h + 5.11))) / 60;
+}
+
+function astro(ms, latDeg, lonDeg) {
+  const d = daysJ2000(ms), lat = latDeg * RAD, lst = localSidereal(d, lonDeg);
+  const se = sunEcl(d), me = moonEcl(d);
+  const sq = eclToEq(se.lon, 0), mq = eclToEq(me.lon, me.lat);
+  let sun = eqToWorld(sq.ra, sq.dec, lst, lat);
+  let moon = eqToWorld(mq.ra, mq.dec, lst, lat);
+  // topocentric lunar parallax, then refraction
+  let mAlt = altOf(moon);
+  mAlt -= Math.asin(6378.14 / me.dist * Math.cos(mAlt));
+  const mAltApp = refract(mAlt * DEG) * RAD;
+  moon = fromAltAz(mAltApp, azOf(moon));
+  const sAltApp = refract(altOf(sun) * DEG) * RAD;
+  sun = fromAltAz(sAltApp, azOf(sun));
+  // phase
+  const sv = eqVec(sq.ra, sq.dec), mv = eqVec(mq.ra, mq.dec);
+  const cosElong = sv[0] * mv[0] + sv[1] * mv[1] + sv[2] * mv[2];
+  const elongDeg = Math.acos(Math.max(-1, Math.min(1, cosElong))) * DEG;
+  const illum = (1 - cosElong) / 2;
+  let age = ((me.lon - se.lon) * DEG) % 360; if (age < 0) age += 360;
+  const phaseAngle = 180 - elongDeg;
+  const phaseLaw = Math.pow(10, -0.4 * (0.026 * phaseAngle + 4e-9 * Math.pow(phaseAngle, 4)));
+  // equatorial → world matrix columns
+  const m = [eqToWorld(0, 0, lst, lat), eqToWorld(Math.PI / 2, 0, lst, lat), eqToWorld(0, Math.PI / 2, lst, lat)];
+  return { sun, moon, illum, age, elongDeg, phaseLaw, lst, eqMat: m, moonDist: me.dist };
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  CPU copy of the atmosphere model (for exposure + direct-light colour)
+// ════════════════════════════════════════════════════════════════════════
+const RE = 6360e3, RA_ = 6420e3, HR = 8000, HM = 1200;
+const BR = [5.802e-6, 13.558e-6, 33.1e-6], BM = 12e-6, BME = 13.3e-6, BO = [0.650e-6, 1.881e-6, 0.085e-6];
+function rsi(o, d, r) {
+  const b = o[0] * d[0] + o[1] * d[1] + o[2] * d[2];
+  const c = o[0] * o[0] + o[1] * o[1] + o[2] * o[2] - r * r;
+  let h = b * b - c; if (h < 0) return [1e9, -1e9]; h = Math.sqrt(h); return [-b - h, -b + h];
+}
+const hitsEarth = (p, d) => { const g = rsi(p, d, RE); return g[0] > 0 && g[0] < 1e8; };
+function dens(h) { return [Math.exp(-h / HR), Math.exp(-h / HM), Math.max(0, 1 - Math.abs(h - 25e3) / 15e3)]; }
+function extinct(od) { return [0, 1, 2].map(i => Math.exp(-(BR[i] * od[0] + BME * od[1] + BO[i] * od[2]))); }
+function lightOD(p, L, n) {
+  const t = rsi(p, L, RA_)[1], ds = t / n, od = [0, 0, 0];
+  for (let j = 0; j < n; j++) {
+    const s = ds * (j + 0.5), q = [p[0] + L[0] * s, p[1] + L[1] * s, p[2] + L[2] * s];
+    const dd = dens(Math.hypot(q[0], q[1], q[2]) - RE); od[0] += dd[0]; od[1] += dd[1]; od[2] += dd[2];
+  }
+  return od.map(x => x * ds);
+}
+const EYE = [0, RE + 10, 0];
+function transmittance(dir) {
+  if (hitsEarth(EYE, dir)) return [0, 0, 0];
+  return extinct(lightOD(EYE, dir, 24));
+}
+function phaseM(mu) { const g = 0.76, g2 = g * g; return 3 / (8 * Math.PI) * (1 - g2) * (1 + mu * mu) / ((2 + g2) * Math.pow(1 + g2 - 2 * g * mu, 1.5)); }
+function phaseR(mu) { return 3 / (16 * Math.PI) * (1 + mu * mu); }
+function skyRadiance(rd, lights) {
+  let tmax = rsi(EYE, rd, RA_)[1];
+  const g = rsi(EYE, rd, RE); if (g[0] > 0 && g[0] < 1e8) tmax = Math.min(tmax, g[0]);
+  const N = 16, ds = tmax / N, od = [0, 0, 0];
+  const acc = lights.map(() => ({ r: [0, 0, 0], m: [0, 0, 0] }));
+  for (let i = 0; i < N; i++) {
+    const s = ds * (i + 0.5), p = [EYE[0] + rd[0] * s, EYE[1] + rd[1] * s, EYE[2] + rd[2] * s];
+    const dd = dens(Math.hypot(p[0], p[1], p[2]) - RE);
+    od[0] += dd[0] * ds; od[1] += dd[1] * ds; od[2] += dd[2] * ds;
+    lights.forEach((l, k) => {
+      if (l.I <= 0 || hitsEarth(p, l.dir)) return;
+      const lo = lightOD(p, l.dir, 6);
+      const T = extinct([od[0] + lo[0], od[1] + lo[1], od[2] + lo[2]]);
+      for (let c = 0; c < 3; c++) { acc[k].r[c] += dd[0] * T[c] * ds; acc[k].m[c] += dd[1] * T[c] * ds; }
+    });
+  }
+  const out = [0, 0, 0];
+  lights.forEach((l, k) => {
+    const mu = rd[0] * l.dir[0] + rd[1] * l.dir[1] + rd[2] * l.dir[2];
+    const pr = phaseR(mu), pm = phaseM(mu);
+    for (let c = 0; c < 3; c++) out[c] += l.I * (BR[c] * pr * acc[k].r[c] + BM * pm * acc[k].m[c]);
+  });
+  return out;
+}
+const lum = c => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+
+// ════════════════════════════════════════════════════════════════════════
+//  Bright star catalogue (J2000): name, RA°, Dec°, V mag, B−V
+// ════════════════════════════════════════════════════════════════════════
+const STARS = [
+  ['天狼星', 101.287, -16.716, -1.46, 0.00], ['老人星', 95.988, -52.696, -0.74, 0.15],
+  ['大角星', 213.915, 19.182, -0.05, 1.23], ['南門二', 219.902, -60.834, -0.27, 0.71],
+  ['織女星', 279.234, 38.784, 0.03, 0.00], ['五車二', 79.172, 45.998, 0.08, 0.80],
+  ['參宿七', 78.634, -8.202, 0.13, -0.03], ['南河三', 114.825, 5.225, 0.34, 0.42],
+  ['水委一', 24.429, -57.237, 0.46, -0.16], ['參宿四', 88.793, 7.407, 0.50, 1.85],
+  ['馬腹一', 210.956, -60.373, 0.61, -0.23], ['牛郎星', 297.696, 8.868, 0.77, 0.22],
+  ['十字架二', 186.650, -63.099, 0.77, -0.24], ['畢宿五', 68.980, 16.509, 0.85, 1.54],
+  ['心宿二', 247.352, -26.432, 1.09, 1.83], ['角宿一', 201.298, -11.161, 1.04, -0.23],
+  ['北河三', 116.329, 28.026, 1.14, 1.00], ['北落師門', 344.413, -29.622, 1.16, 0.09],
+  ['天津四', 310.358, 45.280, 1.25, 0.09], ['十字架三', 191.930, -59.689, 1.25, -0.24],
+  ['軒轅十四', 152.093, 11.967, 1.35, -0.11], ['弧矢七', 104.656, -28.972, 1.50, -0.21],
+  ['北河二', 113.650, 31.888, 1.58, 0.03], ['尾宿八', 263.402, -37.104, 1.62, -0.22],
+  ['參宿五', 81.283, 6.350, 1.64, -0.22], ['五車五', 81.573, 28.608, 1.65, -0.13],
+  ['參宿二', 84.053, -1.202, 1.69, -0.18], ['參宿一', 85.190, -1.943, 1.77, -0.21],
+  ['參宿三', 83.002, -0.299, 2.23, -0.22], ['參宿六', 86.939, -9.670, 2.09, -0.18],
+  ['玉衡', 193.507, 55.960, 1.77, -0.02], ['天樞', 165.932, 61.751, 1.79, 1.07],
+  ['天璇', 165.460, 56.383, 2.37, 0.03], ['天璣', 178.458, 53.695, 2.44, 0.04],
+  ['天權', 183.857, 57.033, 3.31, 0.08], ['開陽', 200.981, 54.925, 2.23, 0.02],
+  ['搖光', 206.885, 49.313, 1.86, -0.10], ['北極星', 37.955, 89.264, 1.98, 0.60],
+  ['王良四', 10.127, 56.537, 2.24, 1.17], ['王良一', 2.295, 59.150, 2.28, 0.34],
+  ['策', 14.177, 60.717, 2.47, -0.15], ['閣道三', 21.454, 60.235, 2.68, 0.13],
+  ['閣道二', 28.599, 63.670, 3.38, -0.10], ['箕宿三', 276.043, -34.385, 1.85, -0.03],
+  ['天船三', 51.081, 49.861, 1.79, 0.48], ['井宿三', 99.428, 16.399, 1.93, 0.00],
+  ['孔雀十一', 306.412, -56.735, 1.94, -0.20], ['十字架一', 187.791, -57.113, 1.63, 1.60],
+  ['鶴一', 332.058, -46.961, 1.74, -0.13], ['海石一', 125.628, -59.509, 1.86, 1.28],
+  ['南船五', 138.300, -69.717, 1.68, 0.07], ['尾宿五', 264.330, -42.998, 1.86, 0.40],
+  ['五車三', 89.882, 44.948, 1.90, 0.08], ['星宿一', 141.897, -8.659, 1.98, 1.44],
+  ['婁宿三', 31.793, 23.462, 2.00, 1.15], ['五帝座一', 177.265, 14.572, 2.14, 0.09],
+  ['昴宿六', 56.871, 24.105, 2.87, -0.09], ['天津一', 305.557, 40.257, 2.23, 0.67],
+  ['河鼓一', 296.565, 10.613, 3.71, 1.51], ['輦道增七', 292.680, 27.960, 3.08, 1.13],
+  ['大陵五', 47.042, 40.956, 2.12, -0.05], ['壁宿二', 2.097, 29.090, 2.06, -0.11],
+  ['室宿一', 346.190, 15.205, 2.49, -0.04], ['心宿一', 240.083, -22.622, 2.29, -0.12],
+];
+function bvToRGB(bv) {
+  const T = 4600 * (1 / (0.92 * bv + 1.7) + 1 / (0.92 * bv + 0.62)) / 100;
+  let r, g, b;
+  if (T <= 66) { r = 255; g = 99.47 * Math.log(T) - 161.12; b = T <= 19 ? 0 : 138.52 * Math.log(T - 10) - 305.04; }
+  else { r = 329.7 * Math.pow(T - 60, -0.1332); g = 288.12 * Math.pow(T - 60, -0.0755); b = 255; }
+  const c = [r, g, b].map(x => Math.max(0, Math.min(255, x)) / 255);
+  const l = lum(c); return c.map(x => x / l);
+}
+const NS = STARS.length;
+const starA = new Float32Array(NS * 4), starC = new Float32Array(NS * 3);
+STARS.forEach((s, i) => {
+  const v = eqVec(s[1] * RAD, s[2] * RAD);
+  starA.set([v[0], v[1], v[2], s[3]], i * 4);
+  starC.set(bvToRGB(s[4]), i * 3);
+});
+const NGP = eqVec(192.8595 * RAD, 27.1283 * RAD), GC = eqVec(266.405 * RAD, -28.936 * RAD);
+
+// ════════════════════════════════════════════════════════════════════════
+//  Shaders
+// ════════════════════════════════════════════════════════════════════════
+const VS = `#version 300 es
+void main(){ vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2); gl_Position = vec4(p*2.0-1.0, 0.0, 1.0); }`;
+
+const ATMOS = `
+const float PI = 3.14159265;
+const float RE = 6360e3, RA = 6420e3, HR = 8000.0, HM = 1200.0;
+const vec3 BR = vec3(5.802e-6, 13.558e-6, 33.1e-6);
+const float BM = 12e-6, BME = 13.3e-6;
+const vec3 BO = vec3(0.650e-6, 1.881e-6, 0.085e-6);
+vec2 rsi(vec3 o, vec3 d, float r){ float b = dot(o,d); float c = dot(o,o) - r*r; float h = b*b - c;
+  if (h < 0.0) return vec2(1e9, -1e9); h = sqrt(h); return vec2(-b - h, -b + h); }
+bool hitsEarth(vec3 p, vec3 d){ vec2 g = rsi(p, d, RE); return g.x > 0.0 && g.x < 1e8; }
+vec3 dens(float h){ return vec3(exp(-h/HR), exp(-h/HM), max(0.0, 1.0 - abs(h - 25e3)/15e3)); }
+vec3 extinct(vec3 od){ return exp(-(BR*od.x + BME*od.y + BO*od.z)); }
+vec3 lightOD(vec3 p, vec3 L){
+  float ds = rsi(p, L, RA).y / 6.0; vec3 od = vec3(0);
+  for (int j = 0; j < 6; j++) od += dens(length(p + L*(ds*(float(j)+0.5))) - RE);
+  return od*ds; }
+float phR(float mu){ return 3.0/(16.0*PI)*(1.0 + mu*mu); }
+float phM(float mu){ const float g = 0.76, g2 = g*g;
+  return 3.0/(8.0*PI)*(1.0-g2)*(1.0+mu*mu)/((2.0+g2)*pow(1.0+g2-2.0*g*mu, 1.5)); }
+`;
+
+const SKY_FS = `#version 300 es
+precision highp float;
+uniform vec2 uSize;
+uniform vec3 uSunDir, uMoonDir;
+uniform float uSunI, uMoonI, uExposure, uOutScale;
+out vec4 o;
+${ATMOS}
+void main(){
+  vec2 uv = gl_FragCoord.xy / uSize;
+  float az = uv.x * 2.0 * PI, el = uv.y * uv.y * 0.5 * PI;
+  vec3 rd = vec3(sin(az)*cos(el), sin(el), -cos(az)*cos(el));
+  vec3 ro = vec3(0.0, RE + 10.0, 0.0);
+  float tmax = rsi(ro, rd, RA).y;
+  const int N = 20; float ds = tmax / float(N);
+  vec3 od = vec3(0), rS = vec3(0), mS = vec3(0), rM = vec3(0), mM = vec3(0);
+  for (int i = 0; i < N; i++){
+    vec3 p = ro + rd*(ds*(float(i)+0.5));
+    vec3 d = dens(length(p) - RE) * ds;
+    od += d;
+    if (uSunI > 0.0 && !hitsEarth(p, uSunDir)){
+      vec3 T = extinct(od + lightOD(p, uSunDir)); rS += d.x*T; mS += d.y*T; }
+    if (uMoonI > 0.0 && !hitsEarth(p, uMoonDir)){
+      vec3 T = extinct(od + lightOD(p, uMoonDir)); rM += d.x*T; mM += d.y*T; }
+  }
+  float mu = dot(rd, uSunDir), mu2 = dot(rd, uMoonDir);
+  vec3 L = uSunI*(BR*phR(mu)*rS + BM*phM(mu)*mS) + uMoonI*(BR*phR(mu2)*rM + BM*phM(mu2)*mM);
+  // airglow + unresolved starlight, brighter toward the horizon (van Rhijn)
+  float s = sin(el);
+  L += ${NIGHT_BASE.toExponential()} * vec3(0.82, 0.92, 1.0) * (1.0 + 1.6 / (1.0 + 12.0*s));
+  o = vec4(L * uExposure * uOutScale, 1.0);
+}`;
+
+const MAIN_FS = `#version 300 es
+precision highp float;
+#define NS ${NS}
+uniform vec2 uRes;
+uniform float uTime, uTanHalf, uPix;
+uniform vec3 uCamPos, uF, uR, uU;
+uniform sampler2D uSky;
+uniform float uSkyScale;
+uniform vec3 uSunDir, uMoonDir, uSunRad, uMoonRad, uSunE, uMoonE;
+uniform float uExposure, uDiskScale, uEarthshine, uNight;
+uniform mat3 uEq;           // equatorial → world
+uniform vec3 uNGP, uGC;
+uniform vec4 uStarA[NS];
+uniform vec3 uStarC[NS];
+uniform float uAmp, uChop, uK0, uMaxH;
+uniform vec2 uWind;
+out vec4 outColor;
+${ATMOS}
+
+// ── hashing / noise ──────────────────────────────────────────────────
+float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+float hash13(vec3 p3){ p3 = fract(p3*0.1031); p3 += dot(p3, p3.zyx + 31.32); return fract((p3.x + p3.y)*p3.z); }
+vec3 hash33(vec3 p3){ p3 = fract(p3*vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yxx)*p3.zyx); }
+float n2(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(hash12(i), hash12(i+vec2(1,0)), f.x), mix(hash12(i+vec2(0,1)), hash12(i+vec2(1,1)), f.x), f.y); }
+float n3(vec3 p){ vec3 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(mix(hash13(i), hash13(i+vec3(1,0,0)), f.x), mix(hash13(i+vec3(0,1,0)), hash13(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(hash13(i+vec3(0,0,1)), hash13(i+vec3(1,0,1)), f.x), mix(hash13(i+vec3(0,1,1)), hash13(i+vec3(1,1,1)), f.x), f.y), f.z); }
+float fbm3(vec3 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++){ s += a*n3(p); p *= 2.03; a *= 0.5; } return s; }
+float fbm2(vec2 p){ float a = 0.5, s = 0.0; for (int i = 0; i < 5; i++){ s += a*n2(p); p = p*2.07 + 7.1; a *= 0.5; } return s; }
+
+// ── sky ──────────────────────────────────────────────────────────────
+vec3 skyL(vec3 d){
+  float el = asin(clamp(d.y, 0.0, 1.0));
+  vec2 uv = vec2(atan(d.x, -d.z) / (2.0*PI), sqrt(el / (0.5*PI)));
+  return texture(uSky, uv).rgb * uSkyScale;
+}
+float airmass(float s){ s = max(s, 0.0); return 1.0 / (s + 0.025*exp(-11.0*s)); }
+vec3 starTrans(float s){ float X = airmass(s); return exp(-X*vec3(0.30, 0.20, 0.14)); }
+
+vec3 starPoint(vec3 e, vec3 sd, float mag, vec3 col, float sigma, float seed){
+  vec3 dv = e - sd; float a2 = dot(dv, dv);
+  float g = exp(-a2/(2.0*sigma*sigma));
+  if (g < 1e-4) return vec3(0);
+  float E = ${E_SUN.toFixed(1)} * pow(10.0, -0.4*(mag + 26.74)) * uExposure;
+  return col * g * E / (6.2832*sigma*sigma);
+}
+vec3 stars(vec3 rd, vec3 e){
+  float sigma = max(uPix*0.75, 6e-5);
+  vec3 c = vec3(0);
+  for (int i = 0; i < NS; i++){
+    vec3 sd = uStarA[i].xyz;
+    if (dot(e, sd) < 0.9995) continue;
+    c += starPoint(e, sd, uStarA[i].w, uStarC[i], sigma, float(i));
+  }
+  // procedural faint field (mag 2.8 – 6.8): N(<m) ∝ 10^(0.5 m)
+  for (int L = 0; L < 2; L++){
+    float S = L == 0 ? 24.0 : 37.0;
+    vec3 p = e*S + float(L)*11.3;
+    vec3 cell = floor(p);
+    vec3 h = hash33(cell);
+    if (h.x < 0.6){
+      vec3 sp = cell + 0.15 + 0.7*hash33(cell + 19.19) - float(L)*11.3;
+      vec3 sd = normalize(sp);
+      float mag = 6.8 + 2.0*log(max(h.y, 1e-4))/2.302585 + float(L)*0.4;
+      if (mag < 2.8) mag = 2.8 + h.z*2.0;
+      float t = h.z;
+      vec3 col = t < 0.25 ? vec3(0.8, 0.88, 1.15) : t < 0.7 ? vec3(1.0, 0.98, 0.95) : t < 0.9 ? vec3(1.1, 0.95, 0.78) : vec3(1.2, 0.85, 0.6);
+      c += starPoint(e, sd, mag, col, sigma, h.x);
+    }
+  }
+  // scintillation, stronger near horizon
+  float tw = 1.0 + (0.15 + 0.5*(1.0 - smoothstep(0.0, 0.5, rd.y))) * (n2(rd.xz*900.0 + uTime*vec2(7.0, 5.0)) - 0.5);
+  return c * tw * starTrans(rd.y);
+}
+vec3 milkyWay(vec3 e, vec3 rd){
+  float b = dot(e, uNGP);
+  float gc = dot(e, uGC);
+  float band = exp(-b*b/0.010);
+  float wide = exp(-b*b/0.05);
+  float bulge = exp(-(1.0 - gc)/0.06);
+  float n = fbm3(e*5.0);
+  float dust = smoothstep(0.42, 0.68, fbm3(e*9.0 + 3.0)) * exp(-b*b/0.0016) * (0.4 + 0.6*smoothstep(-0.3, 0.8, gc));
+  float I = (band*(0.25 + 0.75*n)*(0.55 + 0.45*max(gc, 0.0)) + 0.18*wide + 1.4*bulge*n) * (1.0 - 0.8*dust);
+  return vec3(1.0, 0.94, 0.84) * I * ${MILKY_RAD.toExponential()} * uExposure * starTrans(rd.y);
+}
+// procedural lunar albedo in disk coordinates (x → sky west, y → celestial north)
+float moonAlbedo(vec2 q){
+  const vec4 M[11] = vec4[](
+    vec4(-0.55, 0.12, 0.33, 0.85), vec4(-0.22, 0.45, 0.24, 0.95), vec4(0.24, 0.42, 0.15, 0.95),
+    vec4(0.36, 0.12, 0.18, 0.9),  vec4(0.68, 0.30, 0.11, 0.95), vec4(0.58, -0.13, 0.14, 0.8),
+    vec4(0.38, -0.27, 0.09, 0.75), vec4(-0.18, -0.33, 0.15, 0.75), vec4(-0.50, -0.40, 0.09, 0.8),
+    vec4(-0.12, 0.74, 0.14, 0.6), vec4(0.22, 0.73, 0.11, 0.6));
+  float wob = fbm2(q*6.0) - 0.5;
+  float m = 0.0;
+  for (int i = 0; i < 11; i++){
+    float d = length(q - M[i].xy) / M[i].z + wob*0.6;
+    m = max(m, M[i].w * (1.0 - smoothstep(0.75, 1.1, d)));
+  }
+  float a = 1.0 - 0.45*m + 0.12*(fbm2(q*14.0 + 4.0) - 0.5);
+  // Tycho with rays
+  vec2 tq = q - vec2(-0.12, -0.72); float td = length(tq);
+  a += 0.35*exp(-td*td/0.0012) + 0.08*exp(-td*2.5)*smoothstep(0.6, 0.9, n2(vec2(atan(tq.y, tq.x)*9.0, 0.0)));
+  return a;
+}
+vec3 sky(vec3 rd, bool direct){
+  vec3 c = skyL(rd);
+  if (!direct) return c;
+  vec3 e = transpose(uEq) * rd;           // world → equatorial
+  float pixel = uPix;
+  // moon disk (occludes stars)
+  float mR = 0.004521 * uDiskScale;
+  vec3 mu = normalize(uEq[2] - dot(uEq[2], uMoonDir)*uMoonDir);   // celestial north on the disk
+  vec3 mr = normalize(cross(uMoonDir, mu));
+  vec3 dv = rd - uMoonDir;
+  vec2 q = vec2(dot(dv, mr), dot(dv, mu)) / mR;
+  float r2 = dot(q, q);
+  float moonMask = (dot(rd, uMoonDir) > 0.0) ? 1.0 - smoothstep(1.0 - pixel/mR*1.5, 1.0, sqrt(r2)) : 0.0;
+  if (moonMask < 1.0){
+    c += (stars(rd, e) + milkyWay(e, rd)) * (1.0 - moonMask);
+  }
+  if (moonMask > 0.0){
+    float z = sqrt(max(0.0, 1.0 - r2));
+    vec3 n = q.x*mr + q.y*mu - z*uMoonDir;
+    float mu0 = max(dot(n, uSunDir), 0.0);
+    float ls = 2.0 * mu0 / (mu0 + z + 1e-4);                 // Lommel–Seeliger
+    float alb = moonAlbedo(q);
+    vec3 mc = uMoonRad * alb * (ls + uEarthshine * (1.0 - smoothstep(0.0, 0.05, mu0)));
+    c += mc * moonMask;
+  }
+  // sun disk + aureole
+  float sR = 0.004654 * uDiskScale;
+  float a = length(rd - uSunDir);
+  if (dot(rd, uSunDir) > 0.0){
+    float x = clamp(a / sR, 0.0, 1.0);
+    float limb = 1.0 - 0.6*(1.0 - sqrt(1.0 - x*x));
+    c += uSunRad * limb * (1.0 - smoothstep(1.0 - pixel/sR*1.5, 1.0, a/sR));
+    c += uSunRad * 3e-6 * (exp(-a*35.0) + 0.2*exp(-a*6.0));
+    float am = length(rd - uMoonDir);
+    c += uMoonRad * 4e-3 * exp(-am*40.0);
+  }
+  return c;
+}
+
+// ── ocean ────────────────────────────────────────────────────────────
+const float ANG[12] = float[](0.0, 0.55, -0.45, 0.95, -0.85, 0.25, -1.2, 1.4, -0.3, 0.7, -1.6, 1.1);
+float seaH(vec2 p, int oct){
+  float h = 0.0, amp = uAmp, k = uK0;
+  for (int i = 0; i < 12; i++){
+    if (i >= oct) break;
+    float a = ANG[i];
+    vec2 d = vec2(uWind.x*cos(a) - uWind.y*sin(a), uWind.x*sin(a) + uWind.y*cos(a));
+    float w = sqrt(9.81*k);
+    float ph = dot(d, p)*k - w*uTime + float(i)*1.7;
+    ph += (n2(p*k*0.21 + float(i)*3.1) - 0.5)*3.0;
+    float s = 0.5 + 0.5*sin(ph);
+    h += amp*(2.0*pow(s, uChop) - 1.0);
+    k *= 1.79; amp *= 0.47;
+  }
+  return h;
+}
+float curveDrop(vec2 xz){ return dot(xz, xz) / (2.0*6371e3); }
+vec3 seaN(vec2 p, float eps, int oct){
+  float h = seaH(p, oct);
+  return normalize(vec3(h - seaH(p + vec2(eps, 0.0), oct), eps, h - seaH(p + vec2(0.0, eps), oct)));
+}
+const int GEO = 5;
+// returns t > 0 on hit
+float traceSea(vec3 ro, vec3 rd){
+  if (rd.y >= 0.0) return -1.0;
+  float t0 = ro.y > uMaxH ? (uMaxH - ro.y)/rd.y : 0.0;
+  float t1 = min((-uMaxH - ro.y)/rd.y, 2500.0);
+  if (t1 <= t0) return -1.0;
+  float tp = t0;
+  vec3 p = ro + rd*t0;
+  float dp = p.y + curveDrop(p.xz) - seaH(p.xz, GEO);
+  if (dp < 0.0) return t0;
+  const int N = 56; const float K = 7.0; float span = (t1 - t0) / (exp2(K) - 1.0);
+  for (int i = 1; i <= N; i++){
+    float t = t0 + span*(exp2(K*float(i)/float(N)) - 1.0);
+    p = ro + rd*t;
+    float d = p.y + curveDrop(p.xz) - seaH(p.xz, GEO);
+    if (d < 0.0){
+      float ta = tp, da = dp, tb = t, db = d;
+      for (int j = 0; j < 6; j++){
+        float tm = mix(ta, tb, da/(da - db));
+        vec3 q = ro + rd*tm;
+        float dm = q.y + curveDrop(q.xz) - seaH(q.xz, GEO);
+        if (dm < 0.0){ tb = tm; db = dm; } else { ta = tm; da = dm; }
+      }
+      return mix(ta, tb, da/(da - db));
+    }
+    tp = t; dp = d;
+  }
+  return -1.0;
+}
+// curved-earth sea level, used beyond the traced range
+float farSea(vec3 ro, vec3 rd){
+  vec3 c = vec3(0.0, -6371e3, 0.0);
+  vec2 g = rsi(ro - c, rd, 6371e3);
+  return (g.x > 0.0 && g.x < 1e8) ? g.x : -1.0;
+}
+float ggx(float NdH, float r){ float a2 = r*r*r*r; float d = NdH*NdH*(a2 - 1.0) + 1.0; return a2/(PI*d*d); }
+vec3 specLight(vec3 N, vec3 V, vec3 L, vec3 E, float r){
+  float NdL = dot(N, L);
+  if (NdL <= 0.0 || L.y < -0.01) return vec3(0);
+  float NdV = max(dot(N, V), 1e-3);
+  vec3 H = normalize(V + L);
+  float F = 0.02 + 0.98*pow(1.0 - max(dot(V, H), 0.0), 5.0);
+  float k = r*r*0.5;
+  float G = NdL/(NdL*(1.0-k)+k) * NdV/(NdV*(1.0-k)+k);
+  return E * ggx(max(dot(N, H), 0.0), r) * F * G / (4.0*NdV);
+}
+vec3 shadeSea(vec3 ro, vec3 rd, float t, bool far){
+  vec3 p = ro + rd*t;
+  float fade = smoothstep(150.0, 2200.0, t);
+  vec3 N;
+  float h = 0.0;
+  if (far){ N = vec3(0, 1, 0); }
+  else {
+    // drop octaves smaller than ~4 pixel footprints (anti-aliasing)
+    float fp = t*uPix / max(-rd.y, 0.03);
+    int oct = clamp(int(log(6.2832/(4.0*fp*uK0))/log(1.79)) + 1, 2, 11);
+    N = seaN(p.xz, max(0.015, fp*0.5), oct);
+    h = seaH(p.xz, GEO);
+    N = normalize(mix(N, vec3(0, 1, 0), fade*0.6));
+  }
+  vec3 V = -rd;
+  // crest silhouettes: normals almost perpendicular to the view alias badly → relax toward up
+  float nv = dot(N, V);
+  if (nv < 0.2) N = normalize(mix(N, vec3(0, 1, 0), (0.2 - nv)/0.2*0.75));
+  if (dot(N, V) < 0.02) N = normalize(N + V*(0.02 - dot(N, V)));
+  vec3 R = reflect(rd, N);
+  // rays reflected downward would hit neighbouring waves, not the bright horizon
+  float occl = mix(1.0, 0.35, smoothstep(0.0, -0.06, R.y));
+  R.y = abs(R.y) + (far ? 0.03 : 0.0);
+  R = normalize(R);
+  float F = 0.02 + 0.98*pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 5.0);
+  F = min(F, 0.82);   // rough-sea average: grazing reflection never quite reaches 1
+  vec3 refl = skyL(R) * occl;
+  vec3 amb = skyL(vec3(0.0, 1.0, 0.0)) * 2.2 + skyL(normalize(vec3(rd.x, 0.15, rd.z))) * 0.9;
+  float sss = pow(clamp(h/uMaxH*0.5 + 0.5, 0.0, 1.0), 2.0);
+  vec3 lit = uSunE*max(dot(N, uSunDir), 0.0) + uMoonE*max(dot(N, uMoonDir), 0.0);
+  vec3 back = uSunE*pow(max(dot(V, -uSunDir) * 0.5 + 0.5, 0.0), 4.0)*max(uSunDir.y + 0.05, 0.0);
+  vec3 body = (amb + lit*0.35 + back*0.6) * (vec3(0.002, 0.013, 0.019) + sss*vec3(0.006, 0.040, 0.035));
+  float rough = mix(0.07, 0.24, smoothstep(0.0, 1800.0, t)) * mix(0.8, 1.25, clamp(uAmp/2.0, 0.0, 1.0));
+  vec3 spec = specLight(N, V, uSunDir, uSunE, rough) + specLight(N, V, uMoonDir, uMoonE, rough);
+  vec3 col = mix(body, refl, F) + spec;
+  // whitecaps on the sharpest crests
+  float foam = smoothstep(0.6, 0.95, h/uMaxH) * smoothstep(0.8, 2.5, uAmp) * (1.0 - fade);
+  foam *= smoothstep(0.45, 0.75, n2(p.xz*0.7 + uTime*0.2));
+  col = mix(col, (amb*0.5 + lit*0.25)*0.9, foam*0.6);
+  // aerial perspective toward the horizon
+  vec3 hz = skyL(normalize(vec3(rd.x, 0.004, rd.z)));
+  col = mix(col, hz, 1.0 - exp(-t/9000.0));
+  return col;
+}
+
+vec3 aces(vec3 x){ return clamp(x*(2.51*x + 0.03)/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+
+void main(){
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / (0.5*uRes.y) * uTanHalf;
+  vec3 rd = normalize(uF + uv.x*uR + uv.y*uU);
+  vec3 ro = uCamPos;
+  vec3 col;
+  float t = traceSea(ro, rd);
+  if (t > 0.0) col = shadeSea(ro, rd, t, false);
+  else {
+    float tf = farSea(ro, rd);
+    if (tf > 0.0) col = shadeSea(ro, rd, tf, true);
+    else col = sky(rd, true);
+  }
+  // scotopic (night) vision: desaturate and shift toward blue
+  float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+  col = mix(col, l*vec3(0.62, 0.78, 1.08), uNight*0.7);
+  col = aces(col);
+  col = pow(col, vec3(1.0/2.2));
+  col += (hash12(gl_FragCoord.xy + fract(uTime)*91.0) - 0.5)/255.0;
+  outColor = vec4(col, 1.0);
+}`;
+</script>
+<script>
+'use strict';
+// ════════════════════════════════════════════════════════════════════════
+//  WebGL setup
+// ════════════════════════════════════════════════════════════════════════
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+function fail(msg) { const e = document.getElementById('err'); e.style.display = 'flex'; e.textContent = msg; throw new Error(msg); }
+if (!gl) fail('此瀏覽器不支援 WebGL2，無法顯示海洋模擬。');
+
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s); console.error(log); fail('著色器編譯失敗：\n' + log);
+  }
+  return s;
+}
+function program(fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) fail('著色器連結失敗：\n' + gl.getProgramInfoLog(p));
+  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); const name = info.name.replace(/\[0\]$/, ''); u[name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+const skyProg = program(SKY_FS);
+const mainProg = program(MAIN_FS);
+gl.bindVertexArray(gl.createVertexArray());
+
+// sky lookup table (azimuth × sqrt(elevation)), HDR if possible
+const LUT_W = 256, LUT_H = 128;
+const hdr = !!gl.getExtension('EXT_color_buffer_float');
+const lutScale = hdr ? 1 : 8;
+const lutTex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, lutTex);
+gl.texImage2D(gl.TEXTURE_2D, 0, hdr ? gl.RGBA16F : gl.RGBA8, LUT_W, LUT_H, 0, gl.RGBA, hdr ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, null);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+const lutFbo = gl.createFramebuffer();
+gl.bindFramebuffer(gl.FRAMEBUFFER, lutFbo);
+gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, lutTex, 0);
+gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+// ════════════════════════════════════════════════════════════════════════
+//  State
+// ════════════════════════════════════════════════════════════════════════
+const PRESETS = [
+  ['台北 · 台灣', 25.03, 121.56, 8], ['墾丁 · 台灣', 21.95, 120.80, 8], ['東京 · 日本', 35.68, 139.69, 9],
+  ['香港', 22.32, 114.17, 8], ['夏威夷 · 美國', 21.30, -157.86, -10], ['大溪地 · 法屬玻里尼西亞', -17.53, -149.57, -10],
+  ['雪梨 · 澳洲', -33.87, 151.21, 10], ['開普敦 · 南非', -33.92, 18.42, 2], ['雷克雅維克 · 冰島', 64.15, -21.94, 0],
+  ['特羅姆瑟 · 挪威 (北極圈)', 69.65, 18.96, 1], ['赤道 · 太平洋', 0, -140, -9], ['南極 · 麥克默多', -77.85, 166.67, 12],
+];
+const S = {
+  sim: Date.now(), playing: false, speed: 600,
+  lat: 25.03, lon: 121.56, tz: 8,
+  camAz: 180 * RAD, camEl: 3 * RAD, fov: 62, camH: 4,
+  amp: 0.7, chop: 2.2, wind: 200, disk: 1, quality: 0.75,
+  logExp: null,
+};
+const $ = id => document.getElementById(id);
+
+// ════════════════════════════════════════════════════════════════════════
+//  Time helpers (local time = UTC + tz hours)
+// ════════════════════════════════════════════════════════════════════════
+const localDate = ms => new Date(ms + S.tz * 3600000);           // read with getUTC*
+const pad = n => String(n).padStart(2, '0');
+function localMidnight(ms) { const d = localDate(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - S.tz * 3600000; }
+function fmtHM(ms) { const d = localDate(ms); return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()); }
+function fmtDate(ms) { const d = localDate(ms); return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); }
+function yearStart(ms) { const d = localDate(ms); return Date.UTC(d.getUTCFullYear(), 0, 1) - S.tz * 3600000; }
+const daysInYear = ms => { const y = localDate(ms).getUTCFullYear(); return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 366 : 365; };
+
+// ════════════════════════════════════════════════════════════════════════
+//  Day summary: rise/set times + slider gradients (recomputed per day)
+// ════════════════════════════════════════════════════════════════════════
+let dayKey = '';
+function skyColorForAlt(alt) {
+  const stops = [[-90, [6, 9, 22]], [-18, [8, 12, 30]], [-12, [18, 28, 64]], [-6, [52, 62, 118]], [-2, [190, 104, 78]],
+    [1, [246, 160, 82]], [6, [150, 186, 220]], [20, [92, 156, 222]], [90, [70, 140, 220]]];
+  for (let i = 1; i < stops.length; i++) if (alt <= stops[i][0]) {
+    const [a0, c0] = stops[i - 1], [a1, c1] = stops[i], f = (alt - a0) / (a1 - a0);
+    return `rgb(${c0.map((c, k) => Math.round(c + (c1[k] - c) * f)).join(',')})`;
+  }
+  return 'rgb(70,140,220)';
+}
+function crossings(t0, span, step, fn, thr) {
+  const out = []; let prev = fn(t0);
+  for (let t = t0 + step; t <= t0 + span; t += step) {
+    const v = fn(t);
+    if ((prev - thr) * (v - thr) < 0) {
+      let a = t - step, b = t;
+      for (let k = 0; k < 20; k++) { const m = (a + b) / 2; if ((fn(a) - thr) * (fn(m) - thr) <= 0) b = m; else a = m; }
+      out.push({ t: (a + b) / 2, rising: v > prev });
+    }
+    prev = v;
+  }
+  return out;
+}
+function updateDay() {
+  const key = fmtDate(S.sim) + S.lat + ',' + S.lon + ',' + S.tz;
+  if (key === dayKey) return; dayKey = key;
+  const m0 = localMidnight(S.sim), DAY = 86400000;
+  const sunAlt = t => altOf(astro(t, S.lat, S.lon).sun) * DEG;
+  const moonAlt = t => altOf(astro(t, S.lat, S.lon).moon) * DEG;
+  // time slider gradient
+  const g = [];
+  for (let i = 0; i <= 96; i++) g.push(`${skyColorForAlt(sunAlt(m0 + DAY * i / 96))} ${(i / 96 * 100).toFixed(2)}%`);
+  $('timeGrad').style.background = `linear-gradient(90deg, ${g.join(',')})`;
+  const sc = crossings(m0, DAY, 600000, sunAlt, -0.27);
+  const mc = crossings(m0, DAY, 600000, moonAlt, -0.27);
+  const marks = [];
+  const name = (list, up, dn) => {
+    const r = list.find(c => c.rising), s = list.find(c => !c.rising);
+    return (r ? fmtHM(r.t) : '—') + ' / ' + (s ? fmtHM(s.t) : '—');
+  };
+  sc.forEach(c => marks.push([c.t, c.rising ? '日出' : '日落', '#ffcf6e', 0]));
+  mc.forEach(c => marks.push([c.t, c.rising ? '月出' : '月落', '#bcd4ff', 1]));
+  for (let h = 0; h <= 24; h += 6) marks.push([m0 + h * 3600000, h ? String(h) : '0', 'rgba(255,255,255,.25)', 0]);
+  $('timeMarks').innerHTML = marks.map(([t, lbl, col, low]) => {
+    const f = (t - m0) / DAY * 100;
+    return `<div class="mk" style="left:${f}%;background:${col}"><i style="color:${col};${low ? 'top:15px' : ''}">${lbl}</i></div>`;
+  }).join('');
+  let sunRS = name(sc);
+  if (!sc.length) sunRS = sunAlt(m0 + DAY / 2) > 0 ? '永晝' : '永夜';
+  $('sunRS').textContent = sunRS;
+  $('moonRS').textContent = mc.length ? name(mc) : (moonAlt(m0 + DAY / 2) > 0 ? '整日可見' : '整日不見');
+  updateYear();
+}
+let yearKey = '';
+function updateYear() {
+  const y0 = yearStart(S.sim), n = daysInYear(S.sim);
+  const key = y0 + ',' + S.lat + ',' + S.lon;
+  if (key === yearKey) return; yearKey = key;
+  // date slider gradient: daylight hours per day (sun alt at local noon) + full-moon marks
+  const g = [], marks = [];
+  for (let i = 0; i <= 48; i++) {
+    const t = y0 + i / 48 * n * 86400000 + 12 * 3600000;
+    const alt = altOf(astro(t, S.lat, S.lon).sun) * DEG;
+    g.push(`${skyColorForAlt(Math.min(alt, 70) * 0.9)} ${(i / 48 * 100).toFixed(2)}%`);
+  }
+  let prev = astro(y0, S.lat, S.lon).age;
+  for (let dI = 1; dI <= n; dI++) {
+    const a = astro(y0 + dI * 86400000, S.lat, S.lon).age;
+    if (prev < 180 && a >= 180) marks.push([dI / n * 100, '○', '#f3efe2']);
+    if (prev > 300 && a < 60) marks.push([dI / n * 100, '●', '#7f8aa3']);
+    prev = a;
+  }
+  ['1月', '4月', '7月', '10月'].forEach((m, i) => {
+    const t = Date.UTC(localDate(S.sim).getUTCFullYear(), i * 3, 1) - S.tz * 3600000;
+    marks.push([(t - y0) / (n * 86400000) * 100, m, 'rgba(255,255,255,.3)']);
+  });
+  $('dateGrad').style.background = `linear-gradient(90deg, ${g.join(',')})`;
+  $('dateMarks').innerHTML = marks.map(([f, lbl, col]) =>
+    `<div class="mk" style="left:${f}%;background:${col.startsWith('#') ? 'transparent' : col}"><i style="color:${col}">${lbl}</i></div>`).join('');
+  $('doy').max = n - 1;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  UI wiring
+// ════════════════════════════════════════════════════════════════════════
+PRESETS.forEach((p, i) => { const o = document.createElement('option'); o.value = i; o.textContent = p[0]; $('preset').appendChild(o); });
+{ const o = document.createElement('option'); o.value = 'custom'; o.textContent = '自訂'; $('preset').appendChild(o); }
+$('preset').value = 0;
+function syncInputs() {
+  $('lat').value = S.lat; $('lon').value = S.lon; $('tz').value = S.tz;
+  $('tzv').textContent = (S.tz >= 0 ? '+' : '') + S.tz;
+  $('tzlabel').textContent = 'UTC' + (S.tz >= 0 ? '+' : '') + S.tz;
+  $('ampv').textContent = S.amp.toFixed(2) + ' m'; $('chopv').textContent = S.chop.toFixed(1);
+  const dirs = ['北', '東北', '東', '東南', '南', '西南', '西', '西北'];
+  $('windv').textContent = dirs[Math.round(S.wind / 45) % 8] + '風 ' + S.wind + '°';
+  $('camhv').textContent = S.camH + ' m'; $('fovv').textContent = Math.round(S.fov) + '°';
+  $('diskv').textContent = S.disk.toFixed(1) + '×';
+  $('fov').value = S.fov;
+}
+$('preset').addEventListener('change', e => {
+  if (e.target.value === 'custom') return;
+  const p = PRESETS[+e.target.value];
+  // keep the same local wall-clock time when moving to another time zone
+  const mins = (S.sim - localMidnight(S.sim)) / 60000, date = fmtDate(S.sim);
+  S.lat = p[1]; S.lon = p[2]; S.tz = p[3];
+  const [y, mo, d] = date.split('-').map(Number);
+  S.sim = Date.UTC(y, mo - 1, d) - S.tz * 3600000 + mins * 60000;
+  syncInputs(); S.logExp = null;
+});
+const custom = () => { $('preset').value = 'custom'; };
+$('lat').addEventListener('change', e => { S.lat = Math.max(-89.9, Math.min(89.9, +e.target.value || 0)); custom(); syncInputs(); });
+$('lon').addEventListener('change', e => { S.lon = Math.max(-180, Math.min(180, +e.target.value || 0)); custom(); syncInputs(); });
+$('tz').addEventListener('input', e => { S.tz = +e.target.value; custom(); syncInputs(); });
+$('amp').addEventListener('input', e => { S.amp = +e.target.value; syncInputs(); });
+$('chop').addEventListener('input', e => { S.chop = +e.target.value; syncInputs(); });
+$('wind').addEventListener('input', e => { S.wind = +e.target.value; syncInputs(); });
+$('camh').addEventListener('input', e => { S.camH = +e.target.value; syncInputs(); });
+$('fov').addEventListener('input', e => { S.fov = +e.target.value; syncInputs(); });
+$('disk').addEventListener('input', e => { S.disk = +e.target.value; syncInputs(); });
+$('quality').addEventListener('change', e => { S.quality = +e.target.value; resize(); });
+
+$('time').addEventListener('input', e => { S.sim = localMidnight(S.sim) + (+e.target.value) * 60000; });
+$('doy').addEventListener('input', e => {
+  const mins = (S.sim - localMidnight(S.sim)) / 60000;
+  S.sim = yearStart(S.sim) + (+e.target.value) * 86400000 + mins * 60000;
+});
+$('date').addEventListener('change', e => {
+  if (!e.target.value) return;
+  const [y, mo, d] = e.target.value.split('-').map(Number);
+  const mins = (S.sim - localMidnight(S.sim)) / 60000;
+  S.sim = Date.UTC(y, mo - 1, d) - S.tz * 3600000 + mins * 60000;
+});
+$('dayPrev').addEventListener('click', () => { S.sim -= 86400000; });
+$('dayNext').addEventListener('click', () => { S.sim += 86400000; });
+$('now').addEventListener('click', () => { S.sim = Date.now(); });
+function setPlaying(p) { S.playing = p; $('play').textContent = p ? '❚❚ 暫停' : '▶ 播放'; $('play').classList.toggle('on', p); }
+$('play').addEventListener('click', () => setPlaying(!S.playing));
+$('speed').addEventListener('change', e => { S.speed = +e.target.value; });
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!S.playing); }
+  if (e.code === 'ArrowRight') S.sim += 15 * 60000;
+  if (e.code === 'ArrowLeft') S.sim -= 15 * 60000;
+});
+function lookAt(v) { S.camAz = azOf(v); S.camEl = Math.max(-0.3, Math.min(1.45, altOf(v))); }
+$('lookSun').addEventListener('click', () => lookAt(astro(S.sim, S.lat, S.lon).sun));
+$('lookMoon').addEventListener('click', () => lookAt(astro(S.sim, S.lat, S.lon).moon));
+
+// camera drag / zoom
+let drag = null;
+canvas.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, az: S.camAz, el: S.camEl }; canvas.setPointerCapture(e.pointerId); $('hint').style.opacity = 0; });
+canvas.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const k = 2 * Math.tan(S.fov * RAD / 2) / canvas.clientHeight;
+  S.camAz = drag.az - (e.clientX - drag.x) * k;
+  S.camEl = Math.max(-1.2, Math.min(1.5, drag.el + (e.clientY - drag.y) * k));
+});
+canvas.addEventListener('pointerup', () => { drag = null; });
+canvas.addEventListener('wheel', e => { e.preventDefault(); S.fov = Math.max(4, Math.min(100, S.fov * Math.exp(e.deltaY * 0.001))); syncInputs(); }, { passive: false });
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2) * S.quality;
+  canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
+  canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
+}
+window.addEventListener('resize', resize);
+
+// ════════════════════════════════════════════════════════════════════════
+//  Frame
+// ════════════════════════════════════════════════════════════════════════
+const PHASE_NAMES = [[10, '新月'], [80, '眉月'], [100, '上弦月'], [170, '盈凸月'], [190, '滿月'], [260, '虧凸月'], [280, '下弦月'], [350, '殘月'], [361, '新月']];
+const fmtDeg = r => (r * DEG).toFixed(1) + '°';
+const compass = a => ['北', '北北東', '東北', '東北東', '東', '東南東', '東南', '南南東', '南', '南南西', '西南', '西南西', '西', '西北西', '西北', '北北西'][Math.round(a * DEG / 22.5) % 16];
+function moonIconPath(illum, waxing) {
+  // lit limb on the right when waxing (northern-hemisphere convention)
+  const k = 1 - 2 * illum, s = waxing ? 1 : -1;
+  return `M0,-1 A1,1 0 0 ${s > 0 ? 1 : 0} 0,1 A${Math.abs(k)},1 0 0 ${(k > 0) === (s > 0) ? 0 : 1} 0,-1Z`;
+}
+
+let lastT = performance.now(), wave = 0, uiTimer = 0;
+function frame(now) {
+  const dt = Math.min(0.1, (now - lastT) / 1000); lastT = now;
+  wave = (wave + dt) % 4000;
+  if (S.playing) S.sim += dt * 1000 * S.speed;
+  render(dt);
+  requestAnimationFrame(frame);
+}
+function render(dt) {
+  if (canvas.width !== Math.round(canvas.clientWidth * Math.min(window.devicePixelRatio || 1, 2) * S.quality)) resize();
+  const A = astro(S.sim, S.lat, S.lon);
+  const sunT = transmittance(A.sun), moonT = transmittance(A.moon);
+  const moonI = E_SUN * MOON_RATIO * A.phaseLaw;
+  // auto exposure from the CPU sky model
+  const lights = [{ dir: A.sun, I: E_SUN }, { dir: A.moon, I: moonI }];
+  let L = 0; const dirs = [[0, 1, 0]];
+  for (let k = 0; k < 6; k++) { const az = k * Math.PI / 3, el = 12 * RAD; dirs.push(fromAltAz(el, az)); }
+  dirs.forEach(d => { L += lum(skyRadiance(d, lights)); });
+  L = L / dirs.length + NIGHT_BASE * 1.6;
+  const target = Math.log(0.42 / (Math.pow(L, 0.8) * Math.pow(1.2, 0.2)));
+  if (S.logExp === null || dt === 0) S.logExp = target;
+  else S.logExp += (target - S.logExp) * Math.min(1, dt * 4);
+  const exposure = Math.exp(S.logExp);
+  const night = Math.max(0, Math.min(1, (Math.log10(exposure) - 1.5) / 3));
+
+  const sunRad = sunT.map(x => x * SUN_RAD * exposure);
+  let moonRad = moonT.map(x => x * MOON_FULL_RAD * exposure);
+  const ml = lum(moonRad); if (ml > 2.2) moonRad = moonRad.map(x => x * 2.2 / ml); // local adaptation for the bright moon
+  const sunE = sunT.map(x => x * E_SUN * exposure);
+  const moonE = moonT.map(x => x * moonI * exposure);
+
+  // camera
+  const f = fromAltAz(S.camEl, S.camAz);
+  let r = [-f[2], 0, f[0]]; const rl = Math.hypot(r[0], r[2]); r = [r[0] / rl, 0, r[2] / rl];
+  const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+  const aspect = canvas.width / canvas.height;
+  const tanHalf = Math.tan(S.fov * RAD / 2);
+  const k0 = 0.11 / S.amp;
+  const maxH = S.amp * 1.9;
+  const camY = Math.max(S.camH, maxH + 1.0);
+  const wr = S.wind * RAD;  // wind blows FROM this bearing → waves travel opposite
+  const wdir = [-Math.sin(wr), Math.cos(wr)];
+
+  // pass 1: sky LUT
+  gl.bindFramebuffer(gl.FRAMEBUFFER, lutFbo);
+  gl.viewport(0, 0, LUT_W, LUT_H);
+  gl.useProgram(skyProg.p);
+  const su = skyProg.u;
+  gl.uniform2f(su.uSize, LUT_W, LUT_H);
+  gl.uniform3fv(su.uSunDir, A.sun); gl.uniform3fv(su.uMoonDir, A.moon);
+  gl.uniform1f(su.uSunI, E_SUN); gl.uniform1f(su.uMoonI, moonI);
+  gl.uniform1f(su.uExposure, exposure); gl.uniform1f(su.uOutScale, 1 / lutScale);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // pass 2: scene
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(mainProg.p);
+  const mu = mainProg.u;
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, lutTex); gl.uniform1i(mu.uSky, 0);
+  gl.uniform1f(mu.uSkyScale, lutScale);
+  gl.uniform2f(mu.uRes, canvas.width, canvas.height);
+  gl.uniform1f(mu.uTime, wave);
+  gl.uniform1f(mu.uTanHalf, tanHalf);
+  gl.uniform1f(mu.uPix, 2 * tanHalf / canvas.height);
+  gl.uniform3f(mu.uCamPos, 0, camY, 0);
+  gl.uniform3fv(mu.uF, f); gl.uniform3fv(mu.uR, r); gl.uniform3fv(mu.uU, u);
+  gl.uniform3fv(mu.uSunDir, A.sun); gl.uniform3fv(mu.uMoonDir, A.moon);
+  gl.uniform3fv(mu.uSunRad, sunRad); gl.uniform3fv(mu.uMoonRad, moonRad);
+  gl.uniform3fv(mu.uSunE, sunE); gl.uniform3fv(mu.uMoonE, moonE);
+  gl.uniform1f(mu.uExposure, exposure); gl.uniform1f(mu.uDiskScale, S.disk);
+  gl.uniform1f(mu.uEarthshine, 0.012 * (1 + Math.cos(A.elongDeg * RAD)) / 2);
+  gl.uniform1f(mu.uNight, night);
+  gl.uniformMatrix3fv(mu.uEq, false, new Float32Array([...A.eqMat[0], ...A.eqMat[1], ...A.eqMat[2]]));
+  gl.uniform3fv(mu.uNGP, NGP); gl.uniform3fv(mu.uGC, GC);
+  gl.uniform4fv(mu.uStarA, starA); gl.uniform3fv(mu.uStarC, starC);
+  gl.uniform1f(mu.uAmp, S.amp); gl.uniform1f(mu.uChop, S.chop); gl.uniform1f(mu.uK0, k0); gl.uniform1f(mu.uMaxH, maxH);
+  gl.uniform2fv(mu.uWind, wdir);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // UI (throttled)
+  uiTimer -= dt;
+  if (uiTimer <= 0 || dt === 0) {
+    uiTimer = 0.1;
+    updateDay();
+    const mins = Math.floor((S.sim - localMidnight(S.sim)) / 60000);
+    if (document.activeElement !== $('time')) $('time').value = mins;
+    const doy = Math.floor((localMidnight(S.sim) - yearStart(S.sim)) / 86400000 + 0.5);
+    if (document.activeElement !== $('doy')) $('doy').value = doy;
+    $('clock').textContent = fmtHM(S.sim);
+    if (document.activeElement !== $('date')) $('date').value = fmtDate(S.sim);
+    $('timeCap').textContent = fmtHM(S.sim);
+    $('dateCap').textContent = `${fmtDate(S.sim)}（第 ${doy + 1} 天）`;
+    const sa = altOf(A.sun), ma = altOf(A.moon);
+    $('sunAlt').textContent = fmtDeg(sa); $('sunAz').textContent = fmtDeg(azOf(A.sun)) + ' ' + compass(azOf(A.sun));
+    $('moonAlt').textContent = fmtDeg(ma); $('moonAz').textContent = fmtDeg(azOf(A.moon)) + ' ' + compass(azOf(A.moon));
+    $('moonPhase').textContent = PHASE_NAMES.find(p => A.age < p[0])[1];
+    $('moonIllum').textContent = (A.illum * 100).toFixed(1) + '%';
+    $('moonAge').textContent = (A.age / 360 * 29.53).toFixed(1) + ' 天';
+    $('moonPath').setAttribute('d', moonIconPath(A.illum, A.age < 180));
+    const sd = sa * DEG;
+    $('skyState').textContent = sd > 6 ? '白天' : sd > -0.83 ? '黃金時刻' : sd > -6 ? '民用曙暮光' : sd > -12 ? '航海曙暮光' : sd > -18 ? '天文曙暮光' : '黑夜';
+    let lst = (A.lst * DEG / 15) % 24; if (lst < 0) lst += 24;
+    $('lst').textContent = pad(Math.floor(lst)) + ':' + pad(Math.floor((lst % 1) * 60));
+  }
+}
+
+// test hook: set a scene and render one frame synchronously
+window.__scene = (o) => { const look = o.look; delete o.look; Object.assign(S, o);
+  if (look) lookAt(astro(S.sim, S.lat, S.lon)[look]); S.logExp = null; syncInputs(); render(0); };
+
+// start: look toward whichever of sun/moon is up
+syncInputs(); resize();
+{
+  const A = astro(S.sim, S.lat, S.lon);
+  if (altOf(A.sun) > -0.05) lookAt(A.sun); else if (altOf(A.moon) > 0) lookAt(A.moon); else S.camAz = 90 * RAD;
+  S.camEl = Math.min(Math.max(S.camEl * 0.6, 0.03), 0.6);
+}
+window.READY = true;
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
