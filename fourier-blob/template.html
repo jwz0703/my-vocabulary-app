@@ -1,0 +1,245 @@
+<title>黃色小胖 傅立葉</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=STIX+Two+Text:ital,wght@0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one full-height canvas stage like a chalkboard, controls docked at the bottom. Single dark look on purpose. */
+:root {
+  --ink: #0a0f2c;        /* night-navy ground */
+  --ink-2: #131a42;      /* control surface */
+  --chalk: #e9ecf8;      /* vectors, text */
+  --chalk-dim: #8d94b8;  /* labels */
+  --gold: #f6cf4c;       /* fourier curve */
+  --gold-dim: rgba(214, 178, 82, .32); /* traced line art */
+  --pink: #f08fc0;       /* coefficient accents */
+  --math: "STIX Two Text", "Times New Roman", serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--ink); color: var(--chalk);
+  font-family: system-ui, -apple-system, "PingFang TC", "Noto Sans TC", sans-serif;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+#stage { position: relative; flex: 1; min-height: 0; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.formula {
+  position: absolute; top: 12px; left: max(16px, env(safe-area-inset-left, 0px));
+  font-family: var(--math); font-size: clamp(13px, 2.4vw, 18px); line-height: 1.4; display: grid; gap: 6px;
+  pointer-events: none; text-shadow: 0 0 8px var(--ink);
+}
+.formula i { font-style: italic; }
+.formula .k { color: var(--pink); font-style: italic; }
+.formula sub { font-size: .62em; }
+.formula > div { white-space: nowrap; }
+.formula .sig { display: inline-flex; flex-direction: column; align-items: center; font-size: 1.4em; line-height: .95; margin-inline: .2em; vertical-align: middle; }
+.formula .sig small { font-size: .42em; }
+.nlabel {
+  position: absolute; right: max(16px, env(safe-area-inset-right, 0px)); bottom: 10px;
+  font-family: var(--math); font-size: clamp(28px, 6vw, 48px); pointer-events: none;
+}
+.nlabel b { color: var(--gold); font-weight: 400; }
+.controls {
+  background: var(--ink-2); border-top: 1px solid rgba(233,236,248,.08);
+  padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center;
+  font-size: 13px;
+}
+.controls label { display: flex; align-items: center; gap: 8px; color: var(--chalk-dim); }
+.controls input[type=range] { width: min(46vw, 220px); accent-color: var(--gold); }
+.controls output { font-family: var(--mono); color: var(--chalk); min-width: 3ch; font-variant-numeric: tabular-nums; }
+button {
+  font: inherit; color: var(--ink); background: var(--gold); border: 0;
+  padding: 7px 14px; border-radius: 999px; cursor: pointer; font-weight: 600;
+}
+button.ghost { background: transparent; color: var(--chalk); box-shadow: inset 0 0 0 1px rgba(233,236,248,.3); font-weight: 500; }
+button[aria-pressed="true"].ghost { box-shadow: inset 0 0 0 1px var(--gold); color: var(--gold); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--pink); outline-offset: 2px; }
+.group { display: flex; gap: 8px; flex-wrap: wrap; }
+</style>
+
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div class="formula">
+    <div><i>x<sub>N</sub></i>(t) = <span class="sig"><small>N</small>&Sigma;<small>k=1</small></span> (<i>a</i><sub class="k">k</sub> cos kt + <i>b</i><sub class="k">k</sub> sin kt)</div>
+    <div><i>y<sub>N</sub></i>(t) = <span class="sig"><small>N</small>&Sigma;<small>k=1</small></span> (<i>c</i><sub class="k">k</sub> cos kt + <i>d</i><sub class="k">k</sub> sin kt)</div>
+  </div>
+  <div class="nlabel">N = <b id="nOut">1</b></div>
+</div>
+
+<div class="controls">
+  <div class="group">
+    <button id="play" type="button">暫停</button>
+    <button id="auto" type="button" class="ghost" aria-pressed="true">自動加 N</button>
+    <button id="mode" type="button" class="ghost" aria-pressed="false">只看描線</button>
+    <button id="art" type="button" class="ghost" aria-pressed="true">底圖描線</button>
+    <button id="jump" type="button" class="ghost" aria-pressed="true">隱藏跳筆</button>
+  </div>
+  <label for="nIn">項數 N <input id="nIn" type="range" min="1" max="400" value="1"><output id="nVal">1</output></label>
+  <label for="spd">一圈秒數 <input id="spd" type="range" min="2" max="30" value="8"><output id="spdVal">8</output></label>
+</div>
+
+<script>
+const D = __DATA__;
+const K = D.co.length;
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const C = { gold: css('--gold'), art: css('--gold-dim'), chalk: css('--chalk'), pink: css('--pink') };
+
+// amplitude/phase per term: x_k = Rx cos(kt - px), y_k = Ry cos(kt - py)
+const T = D.co.map(([a, b, c, d]) => ({ rx: Math.hypot(a, b), px: Math.atan2(b, a), ry: Math.hypot(c, d), py: Math.atan2(d, c) }));
+
+const SEQ = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64, 80, 100, 130, 160, 200, 260, 330, 400];
+const S = { N: 1, t: 0, playing: true, auto: true, onlyArt: false, showArt: true, hideJump: true, period: 8, hold: 0 };
+const SAMPLES = 1600;
+let curve = null, ext = { x: 1, y: 1 }, view = null;
+
+function upAt(f) { for (const [a, b] of D.up) if (f >= a && f < b) return true; return false; }
+const UP = Array.from({ length: SAMPLES + 1 }, (_, i) => upAt((i % SAMPLES) / SAMPLES));
+
+function buildCurve(N) {
+  const xs = new Float32Array(SAMPLES + 1), ys = new Float32Array(SAMPLES + 1);
+  for (let i = 0; i <= SAMPLES; i++) {
+    const t = 2 * Math.PI * i / SAMPLES;
+    let x = D.a0[0], y = D.a0[1];
+    for (let k = 0; k < N; k++) {
+      const q = T[k], kt = (k + 1) * t;
+      x += q.rx * Math.cos(kt - q.px);
+      y += q.ry * Math.cos(kt - q.py);
+    }
+    xs[i] = x; ys[i] = y;
+  }
+  // how far each epicycle chain reaches (for layout)
+  let ex = 1, ey = 1;
+  for (let i = 0; i < 256; i++) {
+    const t = 2 * Math.PI * i / 256;
+    let ax = 0, ay = 0, bx = 0, by = 0;
+    for (let k = 0; k < N; k++) {
+      const q = T[k], kt = (k + 1) * t;
+      ax += q.rx * Math.cos(kt - q.px); ay += q.rx * Math.sin(kt - q.px);
+      bx += q.ry * Math.sin(kt - q.py); by += q.ry * Math.cos(kt - q.py);
+    }
+    ex = Math.max(ex, Math.hypot(ax, ay), T[0].rx); ey = Math.max(ey, Math.hypot(bx, by), T[0].ry);
+  }
+  curve = { xs, ys }; ext = { x: ex, y: ey };
+  layout();
+}
+
+function layout() {
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const [bx0, by0, bx1, by1] = D.bb, bw = bx1 - bx0, bh = by1 - by0;
+  const pad = 14, gap = 18, top = Math.min(96, H * 0.13), bottom = 46;
+  const ex = ext.x * 1.04, ey = ext.y * 1.04;
+  const s = Math.max(0.05, Math.min((W - 2 * pad - gap) / (2 * ey + bw), (H - top - bottom - gap) / (2 * ex + bh)));
+  const usedW = s * (2 * ey + bw) + gap, usedH = s * (2 * ex + bh) + gap;
+  const left = (W - usedW) / 2, upper = top + (H - top - bottom - usedH) / 2;
+  const fx = left + 2 * ey * s + gap - bx0 * s, fy = upper + 2 * ex * s + gap - by0 * s;
+  view = { W, H, s, fx, fy, xcy: fy + by0 * s - gap - ex * s, ycx: fx + bx0 * s - gap - ey * s };
+}
+
+function setN(n) {
+  S.N = Math.max(1, Math.min(K, n | 0));
+  nIn.value = S.N; nVal.value = S.N; nOut.textContent = S.N;
+  buildCurve(S.N);
+}
+
+const P = (x, y) => [view.fx + x * view.s, view.fy + y * view.s];
+
+function drawArt(alpha) {
+  ctx.strokeStyle = alpha; ctx.lineWidth = 1.3; ctx.lineJoin = ctx.lineCap = 'round';
+  for (const st of D.art) {
+    ctx.beginPath();
+    st.forEach(([x, y], i) => { const [px, py] = P(x, y); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.stroke();
+  }
+}
+
+function drawChain(cx, cy, vec) {
+  const s = view.s; let x = cx, y = cy;
+  ctx.lineWidth = 1;
+  for (let k = 0; k < S.N; k++) {
+    const [r, dx, dy] = vec(k);
+    if (r * s > 0.6) {
+      ctx.strokeStyle = 'rgba(233,236,248,0.28)';
+      ctx.beginPath(); ctx.arc(x, y, r * s, 0, 2 * Math.PI); ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(233,236,248,0.9)';
+    ctx.beginPath(); ctx.moveTo(x, y); x += dx * s; y += dy * s; ctx.lineTo(x, y); ctx.stroke();
+  }
+  return [x, y];
+}
+
+function frame() {
+  const { W, H, s } = view;
+  ctx.fillStyle = css('--ink'); ctx.fillRect(0, 0, W, H);
+  if (S.onlyArt) { drawArt(C.gold); return; }
+  if (S.showArt) drawArt(C.art);
+
+  const t = S.t;
+  const tipX = drawChain(view.fx + D.a0[0] * s, view.xcy, k => {
+    const q = T[k], a = (k + 1) * t - q.px; return [q.rx, q.rx * Math.cos(a), q.rx * Math.sin(a)];
+  });
+  const tipY = drawChain(view.ycx, view.fy + D.a0[1] * s, k => {
+    const q = T[k], a = (k + 1) * t - q.py; return [q.ry, q.ry * Math.sin(a), q.ry * Math.cos(a)];
+  });
+
+  const n = Math.min(SAMPLES, Math.floor(t / (2 * Math.PI) * SAMPLES));
+  const [px, py] = P(curve.xs[n], curve.ys[n]);
+
+  ctx.setLineDash([6, 6]); ctx.strokeStyle = 'rgba(233,236,248,0.6)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(tipX[0], tipX[1]); ctx.lineTo(px, py);
+  ctx.moveTo(tipY[0], tipY[1]); ctx.lineTo(px, py); ctx.stroke(); ctx.setLineDash([]);
+
+  ctx.strokeStyle = C.gold; ctx.lineWidth = 2.2; ctx.lineJoin = ctx.lineCap = 'round';
+  ctx.shadowColor = C.gold; ctx.shadowBlur = 6;
+  ctx.beginPath(); let pen = false;
+  for (let i = 0; i <= n; i++) {
+    if (S.hideJump && UP[i]) { pen = false; continue; }
+    const [x, y] = P(curve.xs[i], curve.ys[i]);
+    pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true;
+  }
+  ctx.stroke(); ctx.shadowBlur = 0;
+
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(px, py, 4, 0, 2 * Math.PI); ctx.fill();
+}
+
+let last = performance.now();
+function tick(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (S.playing && !S.onlyArt) {
+    if (S.hold > 0) { S.hold -= dt; if (S.hold <= 0) { S.t = 0; if (S.auto) setN(SEQ.find(v => v > S.N) ?? 1); } }
+    else {
+      S.t += 2 * Math.PI * dt / S.period;
+      if (S.t >= 2 * Math.PI) { S.t = 2 * Math.PI - 1e-9; S.hold = 1.2; }
+    }
+  }
+  frame();
+  requestAnimationFrame(tick);
+}
+
+const $ = id => document.getElementById(id);
+const nIn = $('nIn'), nVal = $('nVal'), nOut = $('nOut');
+const toggle = (id, key, onChange) => $(id).addEventListener('click', e => {
+  S[key] = !S[key]; e.currentTarget.setAttribute('aria-pressed', S[key]); onChange && onChange();
+});
+$('play').addEventListener('click', e => { S.playing = !S.playing; e.currentTarget.textContent = S.playing ? '暫停' : '播放'; });
+toggle('auto', 'auto');
+toggle('mode', 'onlyArt');
+toggle('art', 'showArt');
+toggle('jump', 'hideJump');
+nIn.addEventListener('input', () => {
+  S.auto = false; $('auto').setAttribute('aria-pressed', false);
+  setN(+nIn.value); S.t = 0; S.hold = 0;
+});
+$('spd').addEventListener('input', e => { S.period = +e.target.value; $('spdVal').value = S.period; });
+window.addEventListener('resize', layout);
+
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) { S.auto = false; $('auto').setAttribute('aria-pressed', false); setN(40); }
+else setN(1);
+requestAnimationFrame(tick);
+</script>
