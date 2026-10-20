@@ -1,0 +1,1092 @@
+<title>磁軌、磁區與磁柱</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;900&display=swap">
+<style>
+/* Layout: sticky dark "lab bench" stage on the left, reading panel on the right; stacks on phones. */
+:root{
+  --bg:#eceff2; --surface:#f7f8fa; --fg:#13171c; --muted:#56606b; --line:#d2d8de;
+  --accent:#b02f66; --data:#08788e; --quote:#e2e6ea;
+  --stage:#0a0c10; --stage-fg:#e3e8ee; --stage-muted:#8a95a3; --stage-line:rgba(255,255,255,.1);
+  --c-cyan:#45d4f5; --c-pink:#ff4f95; --c-amber:#ffb547; --c-dim:#6b5a3d;
+  --f-display:"Noto Serif TC","Songti TC","PMingLiU",serif;
+  --f-body:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e1115; --surface:#151a20; --fg:#e6eaef; --muted:#9aa4b0; --line:#262d36;
+    --accent:#f0679b; --data:#4fc8df; --quote:#1b2129; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0e1115; --surface:#151a20; --fg:#e6eaef; --muted:#9aa4b0; --line:#262d36;
+  --accent:#f0679b; --data:#4fc8df; --quote:#1b2129; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:16px;line-height:1.75;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:28px 56px}
+.page{max-width:1280px;margin:0 auto;display:flex;flex-direction:column;gap:36px}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.25}
+p{margin:0}
+button,input{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.intro{display:flex;flex-direction:column;gap:12px;max-width:62ch}
+.eyebrow{font-family:var(--f-mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font-size:clamp(34px,5vw,54px);font-weight:900;letter-spacing:.02em}
+.lede{color:var(--muted);font-size:17px}
+
+.layout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:32px;align-items:start}
+.stage-col{position:sticky;top:calc(env(safe-area-inset-top,0px) + 16px);display:flex;flex-direction:column;gap:14px;min-width:0}
+.stage{position:relative;width:100%;aspect-ratio:4/3;max-height:74vh;max-width:100%;background:var(--stage);border-radius:10px;overflow:hidden;color:var(--stage-fg)}
+#gl{display:block;width:100%;height:100%;cursor:grab;touch-action:pan-y}
+#gl.dragging{cursor:grabbing}
+.hud{position:absolute;top:12px;left:12px;right:12px;display:flex;flex-wrap:wrap;gap:6px 18px;font-family:var(--f-mono);font-size:12px;pointer-events:none}
+.hud div{display:flex;align-items:baseline;gap:6px}
+.hud span{color:var(--stage-muted);font-family:var(--f-body);font-size:12px}
+.hud b{font-weight:500;font-size:17px;font-variant-numeric:tabular-nums;color:var(--stage-fg)}
+.hud i{font-style:normal;color:var(--stage-muted)}
+.legend{position:absolute;left:12px;bottom:12px;margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--stage-fg);pointer-events:none;max-width:60%}
+.legend li{display:flex;align-items:center;gap:8px;text-shadow:0 1px 2px #000}
+.sw{width:10px;height:10px;border-radius:50%;flex:none}
+.sw.c{background:var(--c-cyan)} .sw.p{background:var(--c-pink)} .sw.a{background:var(--c-amber)} .sw.d{background:var(--c-dim)}
+.sw.g{background:rgba(160,190,220,.45)} .sw.z{background:linear-gradient(90deg,#1ad9cc,#4d80ff,#e659d9)}
+.view-btns{position:absolute;right:10px;bottom:10px;display:flex;gap:6px}
+.view-btns button{background:rgba(20,24,30,.72);border:1px solid var(--stage-line);color:var(--stage-fg);border-radius:6px;min-width:34px;height:32px;padding:0 10px;cursor:pointer;font-size:13px;backdrop-filter:blur(6px)}
+.view-btns button:hover{border-color:rgba(255,255,255,.3)}
+.drag-hint{position:absolute;right:12px;top:12px;font-size:11px;color:var(--stage-muted);pointer-events:none}
+.nogl{position:absolute;inset:0;display:grid;place-items:center;padding:24px;text-align:center;color:var(--stage-muted)}
+
+.controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 24px}
+.ctl{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ctl-head{display:flex;justify-content:space-between;gap:8px;font-size:14px}
+.ctl-head label{font-weight:500}
+.ctl-head output{font-family:var(--f-mono);font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--accent);margin:4px 0}
+.toggles{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 12px;font-size:14px;cursor:pointer}
+.chip input{accent-color:var(--accent);margin:0}
+
+.panel{display:flex;flex-direction:column;gap:20px;min-width:0}
+.steps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.steps button{display:flex;flex-direction:column;align-items:flex-start;gap:0;text-align:left;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:8px 10px;cursor:pointer;min-width:0}
+.steps button .n{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
+.steps button .zh{font-family:var(--f-display);font-weight:600;font-size:16px;line-height:1.35}
+.steps button .en{font-size:11px;color:var(--muted);letter-spacing:.03em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.steps button[aria-selected="true"]{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.steps button[aria-selected="true"] .n{color:var(--accent)}
+
+.step{display:flex;flex-direction:column;gap:14px;min-width:0}
+.step .term{font-family:var(--f-mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--accent)}
+.step h2{font-size:30px;font-weight:900}
+.step p{max-width:62ch}
+.step b{color:var(--data);font-weight:700}
+.step blockquote{margin:0;padding:10px 14px;background:var(--quote);border-radius:6px;font-family:var(--f-display);font-style:italic;font-size:15px;line-height:1.6;color:var(--muted)}
+.step blockquote::before{content:"課本原文";display:block;font-family:var(--f-body);font-style:normal;font-size:11px;letter-spacing:.08em;color:var(--muted);margin-bottom:2px}
+.tip{border-top:1px solid var(--line);padding-top:12px;font-size:15px;color:var(--muted)}
+.tip strong{color:var(--fg);font-weight:500}
+.stat{display:flex;flex-wrap:wrap;gap:12px 28px}
+.stat div{display:flex;flex-direction:column}
+.stat b{font-family:var(--f-mono);font-size:26px;font-weight:500;color:var(--fg);font-variant-numeric:tabular-nums;line-height:1.2}
+.stat span{font-size:13px;color:var(--muted)}
+.zones{display:flex;flex-direction:column;gap:4px;font-family:var(--f-mono);font-size:12px}
+.zones .row{display:grid;grid-template-columns:3.2em minmax(0,1fr) 2.4em;align-items:center;gap:8px}
+.zones .bar{height:10px;border-radius:2px}
+.zones .row span:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.calc{display:flex;flex-direction:column;gap:10px;border:1px solid var(--line);border-radius:8px;padding:14px;background:var(--surface)}
+.calc .eq{font-family:var(--f-mono);font-size:14px;font-variant-numeric:tabular-nums;overflow-x:auto;white-space:nowrap}
+.calc .eq b{color:var(--fg);font-weight:500}
+.calc .total{font-family:var(--f-mono);font-size:28px;font-variant-numeric:tabular-nums}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;width:max-content}
+.seg button{border:0;background:transparent;padding:4px 12px;cursor:pointer;font-size:13px}
+.seg button[aria-pressed="true"]{background:var(--accent);color:#fff}
+
+.extras{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:40px;border-top:1px solid var(--line);padding-top:32px}
+.extras h2{font-size:24px;font-weight:900;margin-bottom:14px}
+.extras section{min-width:0}
+.tbl-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{text-align:left;padding:7px 10px 7px 0;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;font-weight:500;color:var(--muted);letter-spacing:.06em}
+td:first-child{font-family:var(--f-mono);font-size:14px;white-space:nowrap}
+td:last-child{color:var(--muted);font-size:14px}
+dl{margin:0;display:flex;flex-direction:column;gap:12px}
+dt{font-weight:700}
+dd{margin:0;color:var(--muted);font-size:15px}
+
+@media (max-width:960px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .stage-col{position:static}
+  .extras{grid-template-columns:minmax(0,1fr)}
+}
+@media (max-width:520px){
+  .controls{grid-template-columns:minmax(0,1fr)}
+  .hud b{font-size:15px}
+  .legend{font-size:11px;max-width:70%}
+  .drag-hint{display:none}
+}
+</style>
+
+<div class="page">
+  <header class="intro">
+    <p class="eyebrow">Chapter 1 · Data Storage · p.52 · Figure 1.9</p>
+    <h1>碟片上的同心圓</h1>
+    <p class="lede">傳統硬碟（HDD）怎麼把位元放進一片旋轉的金屬碟？跟著六個步驟，從磁軌、磁區、磁柱，一路看到分區位元記錄和容量。左邊的硬碟是用 GLSL 著色器即時算出來的，可以拖曳旋轉。</p>
+  </header>
+
+  <main class="layout">
+    <section class="stage-col" aria-label="3D 硬碟模型">
+      <div class="stage" id="stage">
+        <canvas id="gl" aria-label="硬碟模型：碟片、主軸、存取臂與讀寫頭"></canvas>
+        <div class="hud" aria-live="off">
+          <div><span>磁軌</span><b id="hTrack">12</b><i>/ 24</i></div>
+          <div><span>磁區</span><b id="hSector">0</b><i id="hSecTot">/ 8</i></div>
+          <div><span>磁柱</span><b id="hCyl">12</b></div>
+          <div><span>讀寫頭</span><b id="hHeads">6</b></div>
+        </div>
+        <p class="drag-hint">拖曳旋轉視角</p>
+        <ul class="legend" id="legend"></ul>
+        <div class="view-btns">
+          <button type="button" id="zin" aria-label="拉近">＋</button>
+          <button type="button" id="zout" aria-label="拉遠">－</button>
+          <button type="button" id="zreset">重設視角</button>
+        </div>
+        <p class="nogl" id="nogl" hidden>這個瀏覽器不支援 WebGL2，所以 3D 模型無法顯示。右邊的文字說明仍然完整。</p>
+      </div>
+
+      <div class="controls">
+        <div class="ctl">
+          <div class="ctl-head"><label for="track">讀寫頭位置</label><output id="trackOut" for="track">第 12 條磁軌</output></div>
+          <input type="range" id="track" min="0" max="23" step="1" value="12">
+        </div>
+        <div class="ctl">
+          <div class="ctl-head"><label for="platters">碟片數</label><output id="plattersOut" for="platters">3 片 · 6 面</output></div>
+          <input type="range" id="platters" min="1" max="6" step="1" value="3">
+        </div>
+        <div class="ctl">
+          <div class="ctl-head"><label for="light">燈光方向</label><output id="lightOut" for="light">0°</output></div>
+          <input type="range" id="light" min="0" max="360" step="1" value="0">
+        </div>
+        <div class="ctl">
+          <div class="ctl-head"><span>顯示</span></div>
+          <div class="toggles">
+            <label class="chip" for="overlay"><input type="checkbox" id="overlay" checked> 資料層</label>
+            <label class="chip" for="spin"><input type="checkbox" id="spin" checked> 碟片旋轉</label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="steps" role="tablist" id="steps" aria-label="步驟"></div>
+      <article class="step" id="step" role="tabpanel"></article>
+    </section>
+  </main>
+
+  <div class="extras">
+    <section>
+      <h2>單字表</h2>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>ENGLISH</th><th>中文</th><th>在這頁的意思</th></tr></thead>
+          <tbody>
+            <tr><td>track</td><td>磁軌</td><td>讀寫頭不動時，碟片轉一圈掃過的圓</td></tr>
+            <tr><td>sector</td><td>磁區</td><td>磁軌切成的一段弧，可以單獨存取</td></tr>
+            <tr><td>cylinder</td><td>磁柱</td><td>所有碟面上同一半徑的磁軌</td></tr>
+            <tr><td>platter</td><td>碟片</td><td>鍍了磁性材料的圓形碟</td></tr>
+            <tr><td>spindle</td><td>主軸</td><td>串起所有碟片、帶著它們旋轉的軸</td></tr>
+            <tr><td>read/write head</td><td>讀寫頭</td><td>貼近碟面讀寫位元的元件</td></tr>
+            <tr><td>access arm</td><td>存取臂</td><td>帶著讀寫頭擺動的臂</td></tr>
+            <tr><td>zoned-bit recording</td><td>分區位元記錄</td><td>外圈的區每軌放更多磁區</td></tr>
+            <tr><td>concentric</td><td>同心的</td><td>所有磁軌共用同一個圓心</td></tr>
+            <tr><td>traverse</td><td>橫越、掃過</td><td>讀寫頭掃過一整圈</td></tr>
+            <tr><td>reposition</td><td>重新定位</td><td>把讀寫頭移到另一條磁軌</td></tr>
+            <tr><td>in unison</td><td>一致地、同步地</td><td>所有讀寫頭一起移動</td></tr>
+            <tr><td>arc</td><td>弧</td><td>圓周上的一段</td></tr>
+            <tr><td>adjacent</td><td>相鄰的</td><td>相鄰的磁軌組成一個區</td></tr>
+            <tr><td>compactly</td><td>緊密地</td><td>外圈位元排得比較不緊密</td></tr>
+            <tr><td>terabyte (TB)</td><td>兆位元組</td><td>約 10¹² 位元組</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section>
+      <h2>材質與渲染</h2>
+      <dl>
+        <dt>碟片：各向異性金屬加薄膜干涉</dt>
+        <dd>碟片表面沿圓周方向研磨，所以用各向異性 GGX：沿半徑方向粗糙、沿圓周方向光滑，亮光會拉成放射狀的光條。轉動「燈光方向」可以看到光條跟著繞。表面再疊一層薄膜干涉，模擬碳保護層和潤滑層造成的淡淡色偏。</dd>
+        <dt>存取臂：拉絲不鏽鋼</dt>
+        <dd>沿著臂的長度方向拉絲，也是各向異性反射。臂上挖了減重孔，末端的懸臂片斜向碟面，把讀寫頭滑塊壓在碟片上方。</dd>
+        <dt>其他零件</dt>
+        <dd>主軸與夾片是鏡面鉻；音圈是帶繞線紋路的銅；底座是粗糙度帶雜訊的噴砂鑄鋁；軸承座是黑色陽極處理；讀寫頭滑塊是深色陶瓷，加了粉紅色自發光方便辨認。</dd>
+        <dt>渲染方式</dt>
+        <dd>碟片用解析式光線求交，其他零件用 SDF 光線步進。每個像素追蹤一次反射（所以碟片上映得出存取臂和上一片碟片），再加柔和陰影、環境遮蔽、程序化的攝影棚光源，最後做 ACES 色調映射。</dd>
+      </dl>
+    </section>
+  </div>
+</div>
+
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+in vec2 a;
+void main(){ gl_Position = vec4(a, 0.0, 1.0); }
+</script>
+
+<script id="fs" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+out vec4 outColor;
+
+uniform vec2  uRes;
+uniform float uTime;
+uniform vec3  uCamPos;
+uniform vec3  uCamTgt;
+uniform float uDisk;     // disk rotation (rad)
+uniform float uHeadR;    // current head radius
+uniform vec2  uHead;     // head position (x,z)
+uniform vec2  uPivot;    // actuator pivot (x,z)
+uniform int   uN;        // platter count
+uniform int   uMode;     // 0 track 1 sector 2 cylinder 3 constant 4 zbr 5 capacity
+uniform float uOverlay;  // data layer 0..1
+uniform float uLight;    // studio rotation (rad)
+
+#define PI  3.14159265
+#define TAU 6.28318531
+const float R_OUT = 1.0, R_HOLE = 0.30, R_IN = 0.36, R_DATA = 0.97;
+const float PH = 0.012, SP = 0.16, NT = 24.0, YB = -0.15;
+const float TW = (R_DATA - R_IN) / NT;
+const vec3 CYAN  = vec3(0.22, 0.80, 1.00);
+const vec3 PINK  = vec3(1.00, 0.24, 0.55);
+const vec3 AMBER = vec3(1.00, 0.68, 0.24);
+
+float gTop;
+vec3  gKey;
+const vec3 KEY_COL  = vec3(3.1, 2.95, 2.75);
+const vec3 FILL_COL = vec3(0.35, 0.45, 0.62);
+
+vec2 rot2(vec2 v, float a){ float c = cos(a), s = sin(a); return vec2(c*v.x - s*v.y, s*v.x + c*v.y); }
+vec3 rotY(vec3 v, float a){ float c = cos(a), s = sin(a); return vec3(c*v.x + s*v.z, v.y, -s*v.x + c*v.z); }
+float hash21(vec2 p){ p = fract(p*vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x*p.y); }
+float vnoise(vec2 p){
+  vec2 i = floor(p), f = fract(p); f = f*f*(3.0 - 2.0*f);
+  return mix(mix(hash21(i), hash21(i + vec2(1,0)), f.x), mix(hash21(i + vec2(0,1)), hash21(i + vec2(1,1)), f.x), f.y);
+}
+
+float trackR(float i){ return R_IN + (i + 0.5)*TW; }
+float sectorsFor(float ti){
+  if(uMode == 4 || uMode == 5){ float z = floor(ti/3.0); return floor(8.0*trackR(z*3.0)/trackR(0.0)); }
+  return 8.0;
+}
+vec3 zoneCol(float u){
+  vec3 c = mix(vec3(0.10, 0.85, 0.80), vec3(0.30, 0.50, 1.00), smoothstep(0.0, 0.5, u));
+  return mix(c, vec3(0.90, 0.35, 0.85), smoothstep(0.5, 1.0, u));
+}
+
+// ---------- SDF primitives ----------
+float sdBox(vec3 p, vec3 b){ vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
+float sdRoundBox(vec3 p, vec3 b, float r){ vec3 q = abs(p) - b + r; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0) - r; }
+float sdCylY(vec3 p, float r, float h){ vec2 d = abs(vec2(length(p.xz), p.y)) - vec2(r, h); return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)); }
+float extrude(float d, float y, float h){ vec2 w = vec2(d, abs(y) - h); return min(max(w.x, w.y), 0.0) + length(max(w, 0.0)); }
+float sdUnevenCapsule(vec2 p, vec2 pa, vec2 pb, float ra, float rb){
+  p -= pa; pb -= pa;
+  float h = dot(pb, pb);
+  vec2 q = vec2(dot(p, vec2(pb.y, -pb.x)), dot(p, pb))/h;
+  q.x = abs(q.x);
+  float b = ra - rb;
+  vec2 c = vec2(sqrt(h - b*b), b);
+  float k = c.x*q.y - c.y*q.x;
+  float m = dot(c, q);
+  float n = dot(q, q);
+  if(k < 0.0) return sqrt(h*n) - ra;
+  else if(k > c.x) return sqrt(h*(n + 1.0 - 2.0*q.y)) - rb;
+  return m - ra;
+}
+vec2 opU(vec2 a, vec2 b){ return a.x < b.x ? a : b; }
+
+// material ids: 1 chrome hub, 2 brushed steel arm, 3 slider, 4 copper coil, 5 cast base, 6 anodized pivot, 7 screw, 8 magnet
+vec2 map(vec3 p){
+  float N = float(uN);
+  float top = gTop;
+
+  // chassis with a recess under the platters
+  float base = sdRoundBox(p - vec3(0.28, YB - 0.12, 0.12), vec3(1.78, 0.12, 1.42), 0.05);
+  base = max(base, -sdCylY(p - vec3(0.0, YB, 0.0), 1.07, 0.045));
+  vec2 res = vec2(base, 5.0);
+
+  // spindle hub, clamp and screws (screws turn with the disk)
+  float hubTop = top + PH + 0.02;
+  float hub = sdCylY(p - vec3(0.0, (hubTop + YB - 0.045)*0.5, 0.0), R_HOLE - 0.002, (hubTop - YB + 0.045)*0.5);
+  vec3 q = p - vec3(0.0, top + PH + 0.007, 0.0);
+  float clampD = sdCylY(q, 0.335, 0.006) - 0.002;
+  float cap = sdCylY(p - vec3(0.0, hubTop, 0.0), 0.08, 0.012) - 0.004;
+  vec2 qs = rot2(q.xz, -uDisk);
+  float an = atan(qs.y, qs.x); float sec = TAU/6.0;
+  an = mod(an + sec*0.5, sec) - sec*0.5;
+  vec2 qq = length(qs)*vec2(cos(an), sin(an)) - vec2(0.24, 0.0);
+  float screw = sdCylY(vec3(qq.x, q.y - 0.007, qq.y), 0.021, 0.005) - 0.002;
+  screw = max(screw, -sdBox(vec3(qq.x, q.y - 0.013, qq.y), vec3(0.016, 0.003, 0.0035)));
+  res = opU(res, vec2(min(min(hub, clampD), cap), 1.0));
+  res = opU(res, vec2(screw, 7.0));
+
+  // actuator
+  vec2 P = uPivot, H = uHead;
+  vec2 dir = normalize(H - P);
+  vec2 nrm = vec2(-dir.y, dir.x);
+  float piv = sdCylY(p - vec3(P.x, (top + 0.10 + YB)*0.5, P.y), 0.105, (top + 0.10 - YB)*0.5) - 0.004;
+  res = opU(res, vec2(piv, 6.0));
+
+  // one arm per gap (limited repetition in y)
+  float k = clamp(floor(p.y/SP), -1.0, N - 1.0);
+  float ly = p.y - (k + 0.5)*SP;
+  float armLen = length(H - P);
+  float arm2 = sdUnevenCapsule(p.xz, P, P + dir*(armLen - 0.17), 0.08, 0.034);
+  arm2 = max(arm2, -(length(p.xz - (P + dir*0.40)) - 0.034));
+  arm2 = max(arm2, -(length(p.xz - (P + dir*0.66)) - 0.022));
+  float arm = extrude(arm2, ly, 0.007);
+
+  float s = dot(p.xz - H, dir);
+  float w = dot(p.xz - H, nrm);
+  float gapH = SP*0.5 - PH;
+  float tt = clamp((s + 0.20)/0.20, 0.0, 1.0);
+  float hw = mix(0.030, 0.012, tt);
+  float d2b = max(abs(w) - hw, max(-0.21 - s, s - 0.012));
+  float yc = (gapH - 0.012)*tt;
+  bool hasUp = k + 1.0 <= N - 1.0;
+  bool hasDn = k >= 0.0;
+  float lb = 1e3, sl = 1e3;
+  if(hasUp){
+    lb = min(lb, extrude(d2b, ly - yc, 0.0018)*0.8);
+    sl = min(sl, sdBox(vec3(s, ly - (gapH - 0.006), w), vec3(0.022, 0.0055, 0.016)));
+  }
+  if(hasDn){
+    lb = min(lb, extrude(d2b, ly + yc, 0.0018)*0.8);
+    sl = min(sl, sdBox(vec3(s, ly + (gapH - 0.006), w), vec3(0.022, 0.0055, 0.016)));
+  }
+  res = opU(res, vec2(min(arm, lb), 2.0));
+  res = opU(res, vec2(sl, 3.0));
+
+  // voice coil and yoke at mid-stack
+  float ymid = top*0.5;
+  vec2 C = P - dir*0.27;
+  float yoke2 = sdUnevenCapsule(p.xz, P, C, 0.075, 0.125);
+  yoke2 = max(yoke2, -(length(p.xz - C) - 0.118));
+  float yoke = extrude(yoke2, p.y - ymid, 0.014);
+  float coil = extrude(abs(length(p.xz - C) - 0.085) - 0.032, p.y - ymid, 0.02);
+  res = opU(res, vec2(yoke, 2.0));
+  res = opU(res, vec2(coil, 4.0));
+
+  // magnet block (fixed)
+  vec2 u = normalize(P);
+  vec2 mc = p.xz - (P + u*0.26);
+  vec2 ml = vec2(dot(mc, u), dot(mc, vec2(-u.y, u.x)));
+  float mTop = ymid - 0.035;
+  float mag = sdRoundBox(vec3(ml.x, p.y - (mTop + YB)*0.5, ml.y), vec3(0.15, (mTop - YB)*0.5, 0.22), 0.02);
+  res = opU(res, vec2(mag, 8.0));
+  return res;
+}
+
+vec3 calcN(vec3 p){
+  const vec2 e = vec2(1.0, -1.0)*0.0005;
+  return normalize(e.xyy*map(p + e.xyy).x + e.yyx*map(p + e.yyx).x + e.yxy*map(p + e.yxy).x + e.xxx*map(p + e.xxx).x);
+}
+
+vec2 boxHit(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax){
+  vec3 inv = 1.0/rd;
+  vec3 t0 = (bmin - ro)*inv, t1 = (bmax - ro)*inv;
+  vec3 tn = min(t0, t1), tf = max(t0, t1);
+  return vec2(max(max(tn.x, tn.y), tn.z), min(min(tf.x, tf.y), tf.z));
+}
+
+vec2 march(vec3 ro, vec3 rd, float tmax){
+  vec2 bb = boxHit(ro, rd, vec3(-1.56, YB - 0.30, -1.36), vec3(2.12, gTop + 0.13, 1.60));
+  if(bb.x > bb.y || bb.y < 0.0) return vec2(1e9, -1.0);
+  float t = max(bb.x, 0.0);
+  float tend = min(tmax, bb.y);
+  for(int i = 0; i < 128; i++){
+    if(t > tend) break;
+    vec2 h = map(ro + rd*t);
+    if(abs(h.x) < 0.0003 + 0.0004*t) return vec2(t, h.y);
+    t += h.x*0.85;
+  }
+  return vec2(1e9, -1.0);
+}
+
+// analytic platters (solid capped cylinders)
+float platterHit(vec3 ro, vec3 rd, out vec3 n, out float pid){
+  float best = 1e9;
+  n = vec3(0.0, 1.0, 0.0); pid = 0.0;
+  float ry = abs(rd.y) < 1e-5 ? 1e-5 : rd.y;
+  float a = dot(rd.xz, rd.xz);
+  float b = dot(ro.xz, rd.xz);
+  float c = dot(ro.xz, ro.xz) - R_OUT*R_OUT;
+  float disc = b*b - a*c;
+  if(disc < 0.0 || a < 1e-8) return best;
+  float sq = sqrt(disc);
+  float tcn = (-b - sq)/a, tcf = (-b + sq)/a;
+  for(int i = 0; i < 6; i++){
+    if(i >= uN) break;
+    float yc = float(i)*SP;
+    float t1 = (yc - PH - ro.y)/ry, t2 = (yc + PH - ro.y)/ry;
+    float tyn = min(t1, t2), tyf = max(t1, t2);
+    float tn = max(tyn, tcn), tf = min(tyf, tcf);
+    if(tn < tf && tn > 0.0 && tn < best){
+      vec3 hp = ro + rd*tn;
+      if(length(hp.xz) < R_HOLE) continue;
+      best = tn; pid = float(i);
+      n = tyn > tcn ? vec3(0.0, -sign(ry), 0.0) : vec3(hp.x, 0.0, hp.z)/R_OUT;
+    }
+  }
+  return best;
+}
+
+struct Hit { float t; float id; vec3 n; float pid; };
+
+Hit traceScene(vec3 ro, vec3 rd){
+  Hit h; vec3 pn; float pid;
+  float tp = platterHit(ro, rd, pn, pid);
+  vec2 r = march(ro, rd, min(tp, 20.0));
+  if(r.y > 0.0 && r.x < tp){ h.t = r.x; h.id = r.y; h.n = calcN(ro + rd*r.x); h.pid = 0.0; }
+  else if(tp < 1e8){ h.t = tp; h.id = 10.0; h.n = pn; h.pid = pid; }
+  else { h.t = 1e9; h.id = -1.0; h.n = vec3(0.0); h.pid = 0.0; }
+  return h;
+}
+
+float softShadow(vec3 ro, vec3 rd){
+  vec3 n; float pid;
+  if(platterHit(ro, rd, n, pid) < 1e8) return 0.0;
+  float res = 1.0, t = 0.01;
+  for(int i = 0; i < 40; i++){
+    float h = map(ro + rd*t).x;
+    res = min(res, 9.0*h/t);
+    t += clamp(h, 0.008, 0.2);
+    if(res < 0.002 || t > 4.0) break;
+  }
+  return clamp(res, 0.0, 1.0);
+}
+
+float calcAO(vec3 p, vec3 n){
+  float o = 0.0, s = 1.0;
+  for(int i = 0; i < 5; i++){
+    float h = 0.01 + 0.035*float(i);
+    o += (h - map(p + n*h).x)*s;
+    s *= 0.8;
+  }
+  return clamp(1.0 - 2.5*o, 0.0, 1.0);
+}
+
+// light reaching surfaces tucked between platters
+float stackOcc(vec3 p, vec3 n, float isPlatter, float pid){
+  float r = length(p.xz);
+  float g = SP - 2.0*PH;
+  bool covered;
+  if(isPlatter > 0.5) covered = (n.y > 0.5 && pid < float(uN) - 1.5) || n.y < -0.5;
+  else covered = r < R_OUT && p.y < gTop && p.y > -SP;
+  if(!covered) return 1.0;
+  return clamp(sqrt(g/(max(R_OUT - r, 0.0) + g)), 0.08, 1.0);
+}
+
+// ---------- environment ----------
+float softbox(vec3 d, vec3 c, vec2 sz, float e){
+  float k = dot(d, c);
+  if(k <= 0.0) return 0.0;
+  vec3 ux = normalize(cross(c, vec3(0.0, 1.0, 0.0)));
+  vec3 uy = cross(ux, c);
+  vec3 q = d/k;
+  float x = dot(q, ux), y = dot(q, uy);
+  return smoothstep(sz.x + e, sz.x - e, abs(x))*smoothstep(sz.y + e, sz.y - e, abs(y));
+}
+vec3 env(vec3 d, float r){
+  d = rotY(d, -uLight);
+  float e = 0.015 + r*0.9;
+  float att = 1.0/(1.0 + r*5.0);
+  vec3 col = mix(vec3(0.010, 0.011, 0.015), vec3(0.040, 0.046, 0.058), smoothstep(-0.3, 0.9, d.y));
+  col += vec3(0.020, 0.017, 0.014)*smoothstep(0.0, -0.5, d.y);
+  col += vec3(5.5, 5.25, 4.9)*softbox(d, normalize(vec3(-0.45, 1.0, 0.35)), vec2(0.42, 0.26), e)*att;
+  col += vec3(1.5, 1.8, 2.3)*softbox(d, normalize(vec3(-1.0, 0.3, 0.15)), vec2(0.10, 0.85), e)*att;
+  col += vec3(2.4, 2.35, 2.3)*softbox(d, normalize(vec3(0.15, 0.55, -1.0)), vec2(0.85, 0.16), e)*att;
+  col += vec3(1.6, 0.55, 0.9)*softbox(d, normalize(vec3(1.0, 0.18, -0.35)), vec2(0.06, 0.6), e)*att;
+  return col;
+}
+vec3 envDiff(vec3 n){
+  vec3 d = rotY(n, -uLight);
+  vec3 c = mix(vec3(0.025, 0.027, 0.034), vec3(0.24, 0.235, 0.23), clamp(d.y*0.5 + 0.5, 0.0, 1.0));
+  c += vec3(0.05, 0.06, 0.08)*max(-d.x, 0.0);
+  return c;
+}
+vec3 background(vec3 rd, vec2 uv){
+  vec3 c = mix(vec3(0.016, 0.018, 0.024), vec3(0.055, 0.060, 0.074), smoothstep(-0.4, 0.7, rd.y));
+  c += vec3(0.05, 0.02, 0.035)*exp(-4.0*length(uv - vec2(0.7, 0.55)));
+  return c;
+}
+
+// ---------- materials ----------
+struct Mat { vec3 base; float metal; float rough; float aniso; float rt; float rb; vec3 T; vec3 emis; float film; };
+
+Mat newMat(vec3 b, float met, float r){
+  Mat m; m.base = b; m.metal = met; m.rough = r; m.aniso = 0.0; m.rt = r; m.rb = r;
+  m.T = vec3(1.0, 0.0, 0.0); m.emis = vec3(0.0); m.film = 0.0; return m;
+}
+
+float aline(float d, float w, float fp){
+  float W = max(w, fp);
+  return (1.0 - smoothstep(W*0.5, W*0.5 + fp, d))*(w/W);
+}
+
+Mat platterMat(vec3 p, vec3 n, float pid, float fp){
+  Mat m = newMat(vec3(0.80, 0.805, 0.83), 1.0, 0.12);
+  float r = length(p.xz);
+  if(abs(n.y) < 0.5){ m.base = vec3(0.72, 0.73, 0.75); m.rough = 0.14; return m; }
+  m.aniso = 1.0; m.rt = 0.07; m.rb = 0.40;
+  m.T = normalize(vec3(-p.z, 0.0, p.x));
+  m.film = 1.0;
+  if(r < R_IN - 0.004){ m.rt = 0.16; m.rb = 0.28; m.base = vec3(0.70, 0.71, 0.74); }
+  float aa = clamp(1.0 - fp*1800.0/TAU*2.0, 0.0, 1.0);
+  m.base *= 1.0 - 0.05*(0.5 + 0.5*sin(r*1800.0))*aa;
+
+  if(uOverlay < 0.01) return m;
+  bool inData = r > R_IN && r < R_DATA;
+  if(!inData) return m;
+
+  float x = (r - R_IN)/TW;
+  float ti = floor(x), fr = fract(x);
+  float edgeD = min(fr, 1.0 - fr)*TW;
+  float phiW = atan(p.z, p.x);
+  float phi = mod(phiW - uDisk, TAU);
+  float headPhiW = atan(uHead.y, uHead.x);
+  float headPhi = mod(headPhiW - uDisk, TAU);
+  float headTi = floor((uHeadR - R_IN)/TW);
+  float S = sectorsFor(ti);
+  float sw = TAU/S;
+  float kk = floor(phi/sw), sf = fract(phi/sw);
+  float secEdge = min(sf, 1.0 - sf)*sw*r;
+  float ring = 1.0 - smoothstep(TW*0.42, TW*0.42 + fp, abs(r - uHeadR));
+  float trail = exp(-mod(phiW - headPhiW, TAU)*1.3);
+  float band = 1.0 - smoothstep(TW*0.40, TW*0.40 + fp, abs(fr - 0.5)*TW);
+  // bits: 5 per sector
+  float bw = TAU/(S*5.0);
+  float bi = floor(phi/bw);
+  vec2 bd = vec2((fract(phi/bw) - 0.5)*bw*r, (fr - 0.5)*TW);
+  float dotM = (1.0 - smoothstep(0.0062 - fp*0.5, 0.0062 + fp*0.5, length(bd)))*clamp(0.012/max(fp, 0.012), 0.0, 1.0);
+  float bitV = step(0.5, hash21(vec2(bi + pid*97.0, ti + n.y*13.0)));
+
+  vec3 E = vec3(0.0); float cov = 0.0;
+  if(uMode == 0){
+    E += CYAN*0.06*aline(edgeD, 0.0012, fp);
+    E += CYAN*ring*(0.22 + 1.7*trail);
+    cov = ring*0.6;
+  } else if(uMode == 1){
+    E += CYAN*0.04*aline(edgeD, 0.0012, fp);
+    E += vec3(0.5, 0.6, 0.75)*0.06*aline(secEdge, 0.0012, fp);
+    if(abs(ti - headTi) < 0.5){
+      bool hs = abs(kk - floor(headPhi/sw)) < 0.5;
+      vec3 c = mix(CYAN, vec3(0.45, 0.62, 1.0), mod(kk, 2.0));
+      c = hs ? PINK : c;
+      float gap = aline(secEdge, 0.005, fp);
+      E += c*band*(1.0 - gap)*(hs ? 1.5 : 0.5);
+      E += AMBER*dotM*band*(0.3 + 1.6*bitV);
+      cov = band*0.7;
+    }
+  } else if(uMode == 2){
+    E += CYAN*0.035*aline(edgeD, 0.0012, fp);
+    E += CYAN*ring*(0.85 + 0.7*trail);
+    cov = ring*0.6;
+  } else if(uMode == 3 || uMode == 4){
+    float zone = floor(ti/3.0);
+    vec3 zc = uMode == 4 ? zoneCol(zone/7.0) : vec3(0.50, 0.62, 0.82);
+    float checker = mod(kk + ti, 2.0);
+    float gap = aline(secEdge, 0.003, fp);
+    E += zc*band*(1.0 - gap)*(0.07 + 0.09*checker);
+    E += AMBER*dotM*(0.3 + 1.5*bitV);
+    if(uMode == 4){
+      float mz = mod(x, 3.0);
+      E += zc*0.8*aline(min(mz, 3.0 - mz)*TW, 0.0018, fp);
+    }
+    E += PINK*0.6*aline(abs(abs(r - uHeadR) - TW*0.5), 0.0016, fp);
+    cov = band*0.4;
+  } else {
+    float zone = floor(ti/3.0);
+    vec3 zc = zoneCol(zone/7.0);
+    float gap = aline(secEdge, 0.003, fp);
+    E += zc*band*(1.0 - gap)*(0.05 + 0.06*mod(kk + ti, 2.0));
+    E += CYAN*ring*0.9;
+    cov = band*0.3;
+  }
+  m.emis = E*uOverlay;
+  m.base *= 1.0 - 0.5*cov*uOverlay;
+  return m;
+}
+
+Mat getMat(vec3 p, vec3 n, float id, float pid, float fp){
+  if(id > 9.5) return platterMat(p, n, pid, fp);
+  vec2 P = uPivot, H = uHead;
+  vec2 dir = normalize(H - P);
+  if(id < 1.5) return newMat(vec3(0.66, 0.67, 0.70), 1.0, 0.09);
+  if(id < 2.5){
+    Mat m = newMat(vec3(0.56, 0.57, 0.585), 1.0, 0.30);
+    vec3 T = vec3(dir.x, 0.0, dir.y);
+    T -= n*dot(n, T);
+    if(length(T) > 0.05){ m.aniso = 1.0; m.T = normalize(T); m.rt = 0.14; m.rb = 0.42; }
+    return m;
+  }
+  if(id < 3.5){
+    Mat m = newMat(vec3(0.03, 0.03, 0.036), 0.0, 0.28);
+    float k = (uMode == 1 || uMode == 2) ? 2.4 : 1.0;
+    m.emis = PINK*k*(0.8 + 0.2*sin(uTime*4.0));
+    return m;
+  }
+  if(id < 4.5){
+    vec2 C = P - dir*0.27;
+    float aa = clamp(1.0 - fp*700.0/TAU*2.0, 0.0, 1.0);
+    float w = 0.5 + 0.5*sin(length(p.xz - C)*700.0);
+    return newMat(vec3(0.95, 0.62, 0.50)*(1.0 - 0.18*w*aa), 1.0, 0.30);
+  }
+  if(id < 5.5){
+    float nz = vnoise(p.xz*55.0)*0.5 + vnoise(p.xz*170.0)*0.5;
+    return newMat(vec3(0.50, 0.52, 0.55)*(0.9 + 0.1*nz), 1.0, 0.50 + 0.14*nz);
+  }
+  if(id < 6.5) return newMat(vec3(0.022, 0.024, 0.028), 0.0, 0.36);
+  if(id < 7.5) return newMat(vec3(0.38, 0.39, 0.41), 1.0, 0.24);
+  return newMat(vec3(0.70, 0.66, 0.58), 1.0, 0.30);
+}
+
+vec3 filmTint(float NV){
+  float d = 1.6 + 0.9*(1.0 - NV);
+  return 0.87 + 0.13*cos(TAU*(d*vec3(1.0, 0.86, 0.72) + vec3(0.0, 0.1, 0.2)));
+}
+
+vec3 brdf(vec3 n, vec3 v, vec3 l, Mat m, vec3 F0){
+  float NL = dot(n, l);
+  if(NL <= 0.0) return vec3(0.0);
+  vec3 h = normalize(v + l);
+  float NV = max(dot(n, v), 1e-3), NH = max(dot(n, h), 0.0), VH = max(dot(v, h), 0.0);
+  vec3 F = F0 + (1.0 - F0)*pow(1.0 - VH, 5.0);
+  float D, Vis;
+  if(m.aniso > 0.5){
+    vec3 T = m.T, B = normalize(cross(n, T));
+    float at = max(m.rt*m.rt, 0.002), ab = max(m.rb*m.rb, 0.002);
+    float a2 = at*ab;
+    vec3 vv = vec3(ab*dot(T, h), at*dot(B, h), a2*NH);
+    float w2 = a2/dot(vv, vv);
+    D = a2*w2*w2/PI;
+    float lv = NL*length(vec3(at*dot(T, v), ab*dot(B, v), NV));
+    float ll = NV*length(vec3(at*dot(T, l), ab*dot(B, l), NL));
+    Vis = 0.5/(lv + ll);
+  } else {
+    float a = max(m.rough*m.rough, 0.002), a2 = a*a;
+    float dd = NH*NH*(a2 - 1.0) + 1.0;
+    D = a2/(PI*dd*dd);
+    Vis = 0.5/(NL*sqrt(NV*NV*(1.0 - a2) + a2) + NV*sqrt(NL*NL*(1.0 - a2) + a2));
+  }
+  vec3 kd = (1.0 - F)*(1.0 - m.metal);
+  return (kd*m.base/PI + D*Vis*F)*NL;
+}
+
+vec3 envBRDF(vec3 F0, float r, float NV){
+  const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+  const vec4 c1 = vec4(1.0, 0.0425, 1.04, -0.04);
+  vec4 q = r*c0 + c1;
+  float a004 = min(q.x*q.x, exp2(-9.28*NV))*q.x + q.y;
+  vec2 AB = vec2(-1.04, 1.04)*a004 + q.zw;
+  return F0*AB.x + AB.y;
+}
+
+float envRough(Mat m){ return m.aniso > 0.5 ? mix(m.rt, m.rb, 0.3) : m.rough; }
+
+vec3 shade(vec3 p, vec3 n, vec3 v, Mat m, vec3 envS, float sh, float ao, float specOcc){
+  float NV = max(dot(n, v), 1e-3);
+  vec3 F0 = mix(vec3(0.04), m.base, m.metal);
+  if(m.film > 0.5) F0 *= filmTint(NV);
+  vec3 col = brdf(n, v, gKey, m, F0)*KEY_COL*sh;
+  col += brdf(n, v, rotY(normalize(vec3(0.7, 0.45, -0.6)), uLight), m, F0)*FILL_COL*ao;
+  col += (1.0 - m.metal)*m.base*envDiff(n)*ao;
+  col += envS*envBRDF(F0, envRough(m), NV)*specOcc;
+  return col + m.emis;
+}
+
+vec3 bendN(vec3 n, vec3 groove, vec3 v, float s){
+  vec3 at = cross(groove, v);
+  vec3 an = cross(at, groove);
+  return normalize(mix(n, an, s));
+}
+
+vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03))/(x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
+
+void main(){
+  vec2 uv = (2.0*gl_FragCoord.xy - uRes)/uRes.y;
+  gTop = float(uN - 1)*SP;
+  gKey = rotY(normalize(vec3(-0.45, 1.0, 0.35)), uLight);
+
+  vec3 ro = uCamPos;
+  vec3 fw = normalize(uCamTgt - ro);
+  vec3 rt = normalize(cross(fw, vec3(0.0, 1.0, 0.0)));
+  vec3 up = cross(rt, fw);
+  const float FL = 2.1;
+  vec3 rd = normalize(uv.x*rt + uv.y*up + FL*fw);
+  float pixA = 2.0/(uRes.y*FL);
+
+  Hit h = traceScene(ro, rd);
+  vec3 col;
+  if(h.id < 0.0){
+    col = background(rd, uv);
+  } else {
+    vec3 p = ro + rd*h.t;
+    vec3 n = h.n;
+    vec3 v = -rd;
+    float fp = h.t*pixA/max(abs(dot(n, v)), 0.2);
+    Mat m = getMat(p, n, h.id, h.pid, fp);
+    float isPl = h.id > 9.5 ? 1.0 : 0.0;
+    float occ = stackOcc(p, n, isPl, h.pid);
+    float ao = calcAO(p + n*0.001, n)*occ;
+    float sh = softShadow(p + n*0.003, gKey);
+
+    vec3 nb = m.aniso > 0.5 ? bendN(n, m.T, v, isPl > 0.5 ? 0.55 : 0.4) : n;
+    vec3 R = reflect(rd, nb);
+    if(dot(R, n) < 0.0) R = reflect(rd, n);
+    float er = envRough(m);
+    vec3 envS = env(R, er);
+    float specOcc = ao;
+    if(er < 0.42){
+      vec3 ro2 = p + n*0.002;
+      Hit h2 = traceScene(ro2, R);
+      if(h2.id > 0.0){
+        vec3 p2 = ro2 + R*h2.t;
+        float fp2 = (h.t + h2.t)*pixA/max(abs(dot(h2.n, R)), 0.2) + h2.t*er*0.5;
+        Mat m2 = getMat(p2, h2.n, h2.id, h2.pid, fp2);
+        float occ2 = stackOcc(p2, h2.n, h2.id > 9.5 ? 1.0 : 0.0, h2.pid);
+        vec3 R2 = reflect(R, h2.n);
+        vec3 c2 = shade(p2, h2.n, -R, m2, env(R2, envRough(m2))*occ2, occ2, occ2, 1.0);
+        envS = mix(c2, envS, smoothstep(0.10, 0.42, er));
+        specOcc = mix(1.0, ao, smoothstep(0.10, 0.42, er));
+      }
+    }
+    col = shade(p, n, v, m, envS, sh, ao, specOcc);
+  }
+
+  // cylinder volume: the set of tracks reachable without moving the heads
+  if(uMode == 2 && uOverlay > 0.01){
+    float a = dot(rd.xz, rd.xz), b = dot(ro.xz, rd.xz), c = dot(ro.xz, ro.xz) - uHeadR*uHeadR;
+    float disc = b*b - a*c;
+    if(disc > 0.0){
+      float s = sqrt(disc);
+      for(int j = 0; j < 2; j++){
+        float tc = (-b + (j == 0 ? -s : s))/a;
+        if(tc > 0.0 && tc < h.t){
+          vec3 pc = ro + rd*tc;
+          if(pc.y > -PH && pc.y < gTop + PH){
+            vec3 nc = normalize(vec3(pc.x, 0.0, pc.z));
+            float f = min(1.0/max(abs(dot(nc, rd)), 0.12), 6.0);
+            float ang = atan(pc.z, pc.x);
+            float stripes = 0.55 + 0.45*smoothstep(0.6, 1.0, sin(ang*60.0 - uTime*2.0));
+            float edges = 1.0 + 2.0*exp(-abs(fract(pc.y/SP + 0.5) - 0.5)*SP/0.01);
+            col += CYAN*0.035*f*stripes*edges*uOverlay;
+          }
+        }
+      }
+    }
+  }
+
+  col = aces(col*1.05);
+  col = pow(col, vec3(1.0/2.2));
+  col *= 1.0 - 0.22*dot(uv*0.45, uv*0.45);
+  col += (hash21(gl_FragCoord.xy + fract(uTime)) - 0.5)/255.0;
+  outColor = vec4(col, 1.0);
+}
+</script>
+
+<script>
+(() => {
+  const NT = 24, R_IN = 0.36, R_DATA = 0.97, TW = (R_DATA - R_IN) / NT, SP = 0.16;
+  const PIVOT = [1.30, 0.85], ARM = 1.22;
+  const trackR = i => R_IN + (i + 0.5) * TW;
+  const sectorsFor = (ti, zbr) => zbr ? Math.floor(8 * trackR(Math.floor(ti / 3) * 3) / trackR(0)) : 8;
+  const zoneSectors = Array.from({length: 8}, (_, z) => sectorsFor(z * 3, true));
+  const perSurface = {simple: NT * 8, zbr: zoneSectors.reduce((s, v) => s + v * 3, 0)};
+  const zoneCss = u => {
+    const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+    const c = mix(mix([0.10, 0.85, 0.80], [0.30, 0.50, 1.00], sm(0, 0.5, u)), [0.90, 0.35, 0.85], sm(0.5, 1, u));
+    return `rgb(${c.map(v => Math.round(Math.pow(v, 0.8) * 255)).join(',')})`;
+  };
+  const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const STEPS = [
+    { key: 'track', zh: '磁軌', en: 'Track', cam: [-0.42, 0.62, 3.4],
+      legend: [['c', '讀寫頭目前掃過的磁軌'], ['p', '讀寫頭（滑塊）'], ['g', '其他磁軌的邊界']],
+      html: () => `
+        <p>碟片在主軸上高速旋轉，讀寫頭停在碟面上方或下方。碟片轉一圈，讀寫頭底下經過的是一個圓，這個圓叫做<b>磁軌</b>。</p>
+        <p>存取臂把讀寫頭移到另一個位置（<i>reposition</i>，重新定位），就換到另一條磁軌。所有磁軌都以主軸為圓心，是一組<b>同心圓</b>（<i>concentric</i>）。</p>
+        <blockquote lang="en">Read/write heads are placed above and/or below the disk so that as the disk spins, each head traverses a circle, called a track.</blockquote>
+        <p class="tip"><strong>試試看：</strong>拖動「讀寫頭位置」。存取臂會擺動，亮起的圓環跟著換到另一條磁軌。圓環上比較亮的尾巴，是剛剛從讀寫頭底下轉過去的那一段。</p>` },
+    { key: 'sector', zh: '磁區', en: 'Sector', cam: [-0.22, 0.95, 2.55],
+      legend: [['p', '正從讀寫頭下方經過的磁區'], ['c', '同一條磁軌上的其他磁區'], ['a', '位元 1'], ['d', '位元 0']],
+      html: () => `
+        <p>一條磁軌能裝的資料，比一次需要處理的量多得多，所以每條磁軌再切成好幾段<b>弧</b>（<i>arc</i>），每一段叫做<b>磁區</b>。資料以一串連續的位元寫在磁區裡。</p>
+        <p>同一顆硬碟上每個磁區的位元數都一樣，常見是 512 位元組到幾 KB。每個磁區都可以單獨存取。</p>
+        <blockquote lang="en">…each track is divided into small arcs called sectors on which information is recorded as a continuous string of bits.</blockquote>
+        <p class="tip"><strong>看畫面：</strong>粉紅色那一段，是此刻正從讀寫頭底下經過的磁區，左上角會顯示它的編號。黃點是位元，亮的是 1、暗的是 0。這裡每個磁區只畫 5 個位元；一個 512 位元組的磁區其實有 4096 個位元。</p>` },
+    { key: 'cylinder', zh: '磁柱', en: 'Cylinder', cam: [-0.58, 0.30, 3.6], minN: 3,
+      legend: [['c', '目前的磁柱'], ['p', '每一面各一個讀寫頭']],
+      html: () => `
+        <p>許多硬碟有好幾片碟片，一片疊一片裝在同一根<b>主軸</b>（<i>spindle</i>）上，中間留出空隙讓讀寫頭伸進去。每一面碟片都有自己的讀寫頭，全部裝在同一組存取臂上，<b>一起移動</b>（<i>in unison</i>）。</p>
+        <p>所以讀寫頭停在某個位置時，每一面上同一半徑的磁軌都能存取。這一整組上下對齊的磁軌叫做<b>磁柱</b>。讀寫頭每重新定位一次，就換到另一個磁柱。</p>
+        <blockquote lang="en">Each time the read/write heads are repositioned, a new set of tracks — which is called a cylinder — becomes accessible.</blockquote>
+        <p class="tip"><strong>試試看：</strong>半透明的圓柱就是目前的磁柱。改變「碟片數」，磁柱裡的磁軌數會變成碟片數的兩倍，因為每片碟片上下兩面都有讀寫頭。</p>` },
+    { key: 'density', zh: '每軌磁區相同', en: 'Same sectors per track', cam: [-0.18, 1.12, 2.9],
+      legend: [['a', '位元 1'], ['d', '位元 0'], ['g', '磁區（每軌 8 個）'], ['p', '讀寫頭所在的磁軌']],
+      html: () => {
+        const ratio = (trackR(NT - 1) / trackR(0)).toFixed(1);
+        return `
+        <p>在最簡單的設計裡，每條磁軌的磁區數都一樣。外圈磁軌比內圈長，卻只裝同樣多的位元，所以外圈的位元排得比較<b>鬆</b>（<i>less compactly</i>）。</p>
+        <div class="stat">
+          <div><b>8</b><span>每條磁軌的磁區數</span></div>
+          <div><b>${ratio}×</b><span>最外圈位元間距 ÷ 最內圈</span></div>
+          <div><b>${perSurface.simple}</b><span>每一面的磁區總數</span></div>
+        </div>
+        <blockquote lang="en">…the bits within a sector on a track near the outer edge of the disk are less compactly stored than those on the tracks near the center, since the outer tracks are longer than the inner ones.</blockquote>
+        <p class="tip"><strong>看畫面：</strong>從正上方看黃點，內圈擠在一起，外圈稀稀落落。外圈其實還有很多面積可以放資料，這就是下一步要解決的問題。</p>`; } },
+    { key: 'zbr', zh: '分區位元記錄', en: 'Zoned-bit recording', cam: [-0.18, 1.12, 2.9],
+      legend: [['z', '8 個區，由內而外'], ['a', '位元 1'], ['d', '位元 0'], ['p', '讀寫頭所在的磁軌']],
+      html: () => {
+        const max = Math.max(...zoneSectors);
+        const rows = zoneSectors.map((s, z) => `<div class="row"><span>區 ${z}</span><span class="bar" style="width:${(s / max * 100).toFixed(1)}%;background:${zoneCss(z / 7)}"></span><span>${s}</span></div>`).join('');
+        const gain = Math.round((perSurface.zbr / perSurface.simple - 1) * 100);
+        return `
+        <p>高容量硬碟改用<b>分區位元記錄</b>（<i>zoned-bit recording</i>）。把幾條<b>相鄰</b>（<i>adjacent</i>）的磁軌合成一個<b>區</b>（zone），一顆硬碟通常有十個左右的區。</p>
+        <p>同一區裡每條磁軌的磁區數相同，但越外面的區，每條磁軌的磁區越多。外圈的位元因此也能排得跟內圈差不多密，整個碟面都用上了。</p>
+        <div class="zones" aria-label="每個區的每軌磁區數">${rows}</div>
+        <div class="stat">
+          <div><b>${perSurface.simple}</b><span>每軌固定 8 個磁區時，一面的磁區</span></div>
+          <div><b>${perSurface.zbr}</b><span>分區記錄後，一面的磁區（多 ${gain}%）</span></div>
+        </div>
+        <blockquote lang="en">All tracks within a zone have the same number of sectors, but each zone has more sectors per track than the zone inside of it.</blockquote>
+        <p class="tip"><strong>看畫面：</strong>這個模型有 8 個區，每區 3 條磁軌，每軌磁區數由內而外從 ${zoneSectors[0]} 增加到 ${zoneSectors[7]}。跟上一步比，外圈的黃點密了很多。</p>`; } },
+    { key: 'capacity', zh: '容量', en: 'Capacity', cam: [-0.75, 0.24, 3.9], minN: 4,
+      legend: [['z', '分區後的磁區'], ['c', '目前的磁柱'], ['p', '讀寫頭']],
+      html: () => `
+        <p>硬碟的容量取決於兩件事：碟片有幾片，以及磁軌和磁區排得多密。小型硬碟可能只有一片碟片；能存好幾 TB 的硬碟，通常有三到六片碟片裝在同一根主軸上，而且每片的<b>上下兩面</b>都能存資料。</p>
+        <div class="calc">
+          <div class="seg" role="group" aria-label="每個磁區的大小">
+            <button type="button" data-bytes="512" aria-pressed="true">512 B</button>
+            <button type="button" data-bytes="4096" aria-pressed="false">4 KB</button>
+          </div>
+          <div class="eq" id="calcEq"></div>
+          <div class="total" id="calcTotal"></div>
+        </div>
+        <p>這個模型每面只有 24 條磁軌，所以只算得出幾百 KB 到幾 MB。真實硬碟每面有數十萬條磁軌，同一條公式算出來就是 TB 等級。</p>
+        <blockquote lang="en">High-capacity disk systems, capable of holding many terabytes, consist of perhaps three to six platters mounted on a common spindle. Furthermore, data may be stored on both the upper and lower surfaces of each platter.</blockquote>
+        <p class="tip"><strong>試試看：</strong>拖動「碟片數」，從 1 片加到 6 片，看容量和讀寫頭數一起變。</p>` },
+  ];
+
+  const $ = id => document.getElementById(id);
+  const state = {
+    mode: 0, track: 12, N: 3, light: 0, overlay: 1, overlayT: 1, spin: true,
+    disk: 0, headR: trackR(12), bytes: 512,
+    cam: {yaw: -0.42, pitch: 0.62, dist: 3.4}, camT: {yaw: -0.42, pitch: 0.62, dist: 3.4},
+  };
+
+  function headPos(r) {
+    const pl = Math.hypot(PIVOT[0], PIVOT[1]);
+    const thP = Math.atan2(PIVOT[1], PIVOT[0]);
+    const ca = (r * r + pl * pl - ARM * ARM) / (2 * r * pl);
+    const th = thP + Math.acos(Math.max(-1, Math.min(1, ca)));
+    return [r * Math.cos(th), r * Math.sin(th)];
+  }
+
+  // ---------- step UI ----------
+  const stepsEl = $('steps'), stepEl = $('step');
+  STEPS.forEach((s, i) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.role = 'tab'; b.id = 'tab-' + s.key;
+    b.setAttribute('aria-selected', 'false');
+    b.innerHTML = `<span class="n">${i + 1}</span><span class="zh">${s.zh}</span><span class="en">${s.en}</span>`;
+    b.addEventListener('click', () => setStep(i, true));
+    stepsEl.appendChild(b);
+  });
+
+  function setStep(i, animate) {
+    const s = STEPS[i];
+    state.mode = i;
+    [...stepsEl.children].forEach((b, j) => b.setAttribute('aria-selected', String(j === i)));
+    stepEl.setAttribute('aria-labelledby', 'tab-' + s.key);
+    stepEl.innerHTML = `<p class="term">${s.en}</p><h2>${s.zh}</h2>${s.html()}`;
+    $('legend').innerHTML = s.legend.map(([c, t]) => `<li><span class="sw ${c}"></span>${t}</li>`).join('');
+    if (s.minN && state.N < s.minN) { state.N = s.minN; $('platters').value = s.minN; }
+    state.camT = {yaw: s.cam[0], pitch: s.cam[1], dist: s.cam[2]};
+    if (!animate || reduced) state.cam = {...state.camT};
+    if (s.key === 'capacity') {
+      stepEl.querySelectorAll('.seg button').forEach(btn => btn.addEventListener('click', () => {
+        state.bytes = +btn.dataset.bytes;
+        stepEl.querySelectorAll('.seg button').forEach(o => o.setAttribute('aria-pressed', String(o === btn)));
+        updateCalc();
+      }));
+      stepEl.querySelector(`.seg button[data-bytes="${state.bytes}"]`).click();
+    }
+    syncOutputs();
+    try { history.replaceState(null, '', '#' + s.key); } catch (e) {}
+  }
+
+  function fmtBytes(b) {
+    const u = ['B', 'KB', 'MB', 'GB'];
+    let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return (b >= 100 ? b.toFixed(0) : b.toFixed(1)) + ' ' + u[i];
+  }
+  function updateCalc() {
+    const eq = $('calcEq'), tot = $('calcTotal');
+    if (!eq) return;
+    const total = state.N * 2 * perSurface.zbr * state.bytes;
+    eq.innerHTML = `<b>${state.N}</b> 片 × <b>2</b> 面 × <b>${perSurface.zbr}</b> 磁區 × <b>${state.bytes.toLocaleString()}</b> B`;
+    tot.textContent = '= ' + fmtBytes(total);
+  }
+
+  function syncOutputs() {
+    $('trackOut').textContent = `第 ${state.track} 條磁軌`;
+    $('plattersOut').textContent = `${state.N} 片 · ${state.N * 2} 面`;
+    $('lightOut').textContent = `${state.light}°`;
+    $('hHeads').textContent = state.N * 2;
+    updateCalc();
+  }
+
+  $('track').addEventListener('input', e => { state.track = +e.target.value; syncOutputs(); });
+  $('platters').addEventListener('input', e => { state.N = +e.target.value; syncOutputs(); });
+  $('light').addEventListener('input', e => { state.light = +e.target.value; syncOutputs(); });
+  $('overlay').addEventListener('change', e => { state.overlayT = e.target.checked ? 1 : 0; });
+  $('spin').addEventListener('change', e => { state.spin = e.target.checked; });
+
+  const startKey = (location.hash || '').slice(1);
+  const startIdx = Math.max(0, STEPS.findIndex(s => s.key === startKey));
+  setStep(startIdx, false);
+
+  // ---------- WebGL ----------
+  const canvas = $('gl');
+  const gl = canvas.getContext('webgl2', {antialias: false, alpha: false, powerPreference: 'high-performance'});
+  if (!gl) { $('nogl').hidden = false; canvas.hidden = true; return; }
+
+  function compile(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src.trim());
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  let prog;
+  try {
+    prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, $('vs').textContent));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, $('fs').textContent));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  } catch (err) {
+    console.error(err);
+    $('nogl').textContent = '3D 模型載入失敗，右邊的文字說明仍然完整。';
+    $('nogl').hidden = false; canvas.hidden = true; return;
+  }
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'a');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const U = {};
+  ['uRes', 'uTime', 'uCamPos', 'uCamTgt', 'uDisk', 'uHeadR', 'uHead', 'uPivot', 'uN', 'uMode', 'uOverlay', 'uLight']
+    .forEach(n => U[n] = gl.getUniformLocation(prog, n));
+
+  let scale = 1;
+  const maxDpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.round(r.width * maxDpr * scale));
+    const h = Math.max(1, Math.round(r.height * maxDpr * scale));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  }
+  new ResizeObserver(resize).observe(canvas);
+  resize();
+
+  // orbit
+  let drag = null;
+  canvas.addEventListener('pointerdown', e => {
+    drag = {x: e.clientX, y: e.clientY, id: e.pointerId};
+    canvas.setPointerCapture(e.pointerId);
+    canvas.classList.add('dragging');
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX; drag.y = e.clientY;
+    state.camT.yaw -= dx * 0.008;
+    state.camT.pitch = Math.min(1.45, Math.max(0.06, state.camT.pitch + dy * 0.006));
+    state.cam.yaw = state.camT.yaw; state.cam.pitch = state.camT.pitch;
+  });
+  const endDrag = () => { drag = null; canvas.classList.remove('dragging'); };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+  $('zin').addEventListener('click', () => { state.camT.dist = Math.max(1.5, state.camT.dist * 0.84); });
+  $('zout').addEventListener('click', () => { state.camT.dist = Math.min(6.5, state.camT.dist * 1.19); });
+  $('zreset').addEventListener('click', () => { const c = STEPS[state.mode].cam; state.camT = {yaw: c[0], pitch: c[1], dist: c[2]}; });
+
+  let visible = true;
+  new IntersectionObserver(es => { visible = es[0].isIntersecting; if (visible) kick(); }).observe(canvas);
+  document.addEventListener('visibilitychange', kick);
+
+  let last = performance.now(), slowFrames = 0, running = false, hudTick = 0;
+  const t0 = last;
+  function kick() { if (!running && visible && !document.hidden) { running = true; last = performance.now(); requestAnimationFrame(frame); } }
+
+  function frame(now) {
+    if (!visible || document.hidden) { running = false; return; }
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+
+    if (state.spin) state.disk += dt * (reduced ? 0.12 : 0.5);
+    const tgtR = trackR(state.track);
+    state.headR += (tgtR - state.headR) * (1 - Math.exp(-dt * (reduced ? 30 : 6)));
+    state.overlay += (state.overlayT - state.overlay) * (1 - Math.exp(-dt * 8));
+    const k = 1 - Math.exp(-dt * 3.5);
+    state.cam.yaw += (state.camT.yaw - state.cam.yaw) * k;
+    state.cam.pitch += (state.camT.pitch - state.cam.pitch) * k;
+    state.cam.dist += (state.camT.dist - state.cam.dist) * k;
+
+    const H = headPos(state.headR);
+    const top = (state.N - 1) * SP;
+    const tgt = [0.22, top * 0.5, 0.12];
+    const {yaw, pitch, dist} = state.cam;
+    const pos = [tgt[0] + dist * Math.cos(pitch) * Math.sin(yaw), tgt[1] + dist * Math.sin(pitch), tgt[2] + dist * Math.cos(pitch) * Math.cos(yaw)];
+
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform2f(U.uRes, canvas.width, canvas.height);
+    gl.uniform1f(U.uTime, (now - t0) / 1000);
+    gl.uniform3f(U.uCamPos, pos[0], pos[1], pos[2]);
+    gl.uniform3f(U.uCamTgt, tgt[0], tgt[1], tgt[2]);
+    gl.uniform1f(U.uDisk, state.disk % (Math.PI * 2));
+    gl.uniform1f(U.uHeadR, state.headR);
+    gl.uniform2f(U.uHead, H[0], H[1]);
+    gl.uniform2f(U.uPivot, PIVOT[0], PIVOT[1]);
+    gl.uniform1i(U.uN, state.N);
+    gl.uniform1i(U.uMode, state.mode);
+    gl.uniform1f(U.uOverlay, state.overlay);
+    gl.uniform1f(U.uLight, state.light * Math.PI / 180);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if (++hudTick % 4 === 0) {
+      const ti = Math.min(NT - 1, Math.max(0, Math.floor((state.headR - R_IN) / TW)));
+      const zbr = state.mode >= 4;
+      const S = sectorsFor(ti, zbr);
+      const TAU = Math.PI * 2;
+      const local = (((Math.atan2(H[1], H[0]) - state.disk) % TAU) + TAU) % TAU;
+      $('hTrack').textContent = ti;
+      $('hCyl').textContent = ti;
+      $('hSector').textContent = Math.floor(local / (TAU / S));
+      $('hSecTot').textContent = '/ ' + S;
+    }
+
+    // drop resolution on slow GPUs
+    if (now - t0 > 1500 && scale > 0.5) {
+      slowFrames = dt > 0.034 ? slowFrames + 1 : Math.max(0, slowFrames - 1);
+      if (slowFrames > 20) { scale = Math.max(0.5, scale * 0.8); slowFrames = 0; resize(); }
+    }
+    requestAnimationFrame(frame);
+  }
+  kick();
+})();
+</script>
