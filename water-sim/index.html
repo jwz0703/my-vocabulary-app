@@ -118,7 +118,7 @@ body {
   height: 100%;
   display: block;
 }
-#bg, #gl { pointer-events: none; }
+#bg, #gl, #gpu { pointer-events: none; }
 #tank { touch-action: none; cursor: crosshair; }
 .hint {
   position: absolute;
@@ -185,6 +185,7 @@ body {
 }
 .seg button + button { border-left: 1px solid var(--line); }
 .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--fg); box-shadow: inset 0 -2px 0 var(--accent); }
+.seg button:disabled { color: var(--muted); cursor: not-allowed; }
 .seg-label { font-size: 13px; }
 
 .dev { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
@@ -226,7 +227,7 @@ body {
   <header class="bar">
     <div class="brand">
       <h1>水流實驗槽</h1>
-      <span class="sub" id="gridInfo">FLIP 流體</span>
+      <span class="sub" id="gridInfo">載入中</span>
     </div>
     <div class="stats" aria-live="off">
       <div class="stat"><span class="k">水量</span><span class="v" id="stVol">0 L</span></div>
@@ -244,6 +245,7 @@ body {
   <main class="tank-wrap" id="tankWrap">
     <canvas id="bg" aria-hidden="true"></canvas>
     <canvas id="gl" aria-hidden="true"></canvas>
+    <canvas id="gpu" aria-hidden="true" hidden></canvas>
     <canvas id="tank" aria-label="水槽模擬畫面"></canvas>
     <div class="hint" id="hint"></div>
   </main>
@@ -309,12 +311,17 @@ body {
           <label for="drnPull">吸力</label><output id="drnPullOut" for="drnPull">1.0</output>
           <input type="range" id="drnPull" min="0" max="3" step="0.1" value="1">
         </div>
-        <p class="readout">排水量 <b id="drnFlow">0.0</b> L/s</p>
       </div>
     </section>
 
     <section>
       <h2>環境</h2>
+      <div class="seg-label">運算</div>
+      <div class="seg" id="segEngine">
+        <button data-v="gpu" aria-pressed="false">GPU（WebGPU）</button>
+        <button data-v="cpu" aria-pressed="false">CPU</button>
+      </div>
+      <p class="readout" id="engineInfo"></p>
       <div class="seg-label">模擬品質</div>
       <div class="seg" id="segQuality">
         <button data-v="low" aria-pressed="false">流暢</button>
@@ -323,7 +330,6 @@ body {
         <button data-v="ultra" aria-pressed="false">極致</button>
       </div>
       <p class="readout" id="qualityInfo"></p>
-      <p class="readout" id="rendererInfo">品質越高，水越細緻，但越吃效能；FPS 掉到 30 以下時建議調低一級。</p>
       <div class="field">
         <label for="grav">重力</label><output id="gravOut" for="grav">1.00 g</output>
         <input type="range" id="grav" min="0" max="2" step="0.05" value="1">
@@ -371,70 +377,61 @@ const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t
 const wrap = $('tankWrap');
 const bgCanvas = $('bg');
 const glCanvas = $('gl');
+const gpuCanvas = $('gpu');
 const canvas = $('tank');
 const ctx = canvas.getContext('2d');
 
 // ---------------------------------------------------------------------------
 // World: a 3 m tall tank, 10 cm thick (thickness only matters for litre readouts).
-// The aspect ratio is fixed at load; the grid resolution comes from the quality setting.
+// The aspect ratio is fixed at load; grid resolution comes from the engine + quality.
 // ---------------------------------------------------------------------------
 const TANK_H = 3.0;
 const DEPTH = 0.1;
 const r0 = wrap.getBoundingClientRect();
 const ASPECT = clamp((r0.width || 960) / (r0.height || 600), 0.8, 2.0);
 const SMALL = window.innerWidth < 700;
+const HAS_WEBGPU = !!navigator.gpu;
 
 // field: water-surface buffer resolution relative to CSS pixels
 const QUALITY = {
-  low:   { label: '流暢', ny: 54,  cap: 9000,  field: 0.5 },
-  mid:   { label: '標準', ny: 76,  cap: 18000, field: 0.65 },
-  high:  { label: '精細', ny: 100, cap: 32000, field: 0.8 },
-  ultra: { label: '極致', ny: 130, cap: 56000, field: 1.0 },
+  cpu: {
+    low:   { ny: 54,  cap: 9000,   field: 0.5 },
+    mid:   { ny: 76,  cap: 18000,  field: 0.65 },
+    high:  { ny: 100, cap: 32000,  field: 0.8 },
+    ultra: { ny: 130, cap: 56000,  field: 1.0 },
+  },
+  gpu: {
+    low:   { ny: 90,  cap: 40000,  field: 0.7 },
+    mid:   { ny: 130, cap: 90000,  field: 0.85 },
+    high:  { ny: 170, cap: 150000, field: 1.0 },
+    ultra: { ny: 230, cap: 260000, field: 1.0 },
+  },
 };
-let qualityKey = SMALL ? 'mid' : 'high';
-try { const q = localStorage.getItem('flowtank.quality'); if (q && QUALITY[q]) qualityKey = q; } catch (e) { /* storage unavailable */ }
+const prefs = { engine: HAS_WEBGPU ? 'gpu' : 'cpu', quality: { cpu: SMALL ? 'mid' : 'high', gpu: SMALL ? 'low' : 'mid' } };
+try {
+  const saved = JSON.parse(localStorage.getItem('flowtank.prefs') || 'null');
+  if (saved) {
+    if (saved.engine === 'cpu' || (saved.engine === 'gpu' && HAS_WEBGPU)) prefs.engine = saved.engine;
+    for (const k of ['cpu', 'gpu']) if (saved.quality && QUALITY[k][saved.quality[k]]) prefs.quality[k] = saved.quality[k];
+  }
+} catch (e) { /* storage unavailable */ }
+function savePrefs() { try { localStorage.setItem('flowtank.prefs', JSON.stringify(prefs)); } catch (e) { /* storage unavailable */ } }
 
-const FLUID = 0, AIR = 1, SOLID = 2;
+const REST_DENSITY = 1 / (0.6 * 0.3 * Math.sqrt(3)) * 0.92;   // particles per cell at rest (hex packing at spacing 2r)
+const KERNEL = 3.2;                                          // surface splat radius in particle radii
 
 // ---------------------------------------------------------------------------
-// FLIP fluid: particles carry the water, a MAC grid enforces incompressibility.
-// Grid index is i * ny + j, with j pointing up.
+// Obstacles: a signed distance field at twice the grid resolution (metres,
+// positive in open water). Brush strokes edit it directly; both engines read it.
 // ---------------------------------------------------------------------------
-class Flip {
-  constructor(nx, ny, h, maxP) {
-    this.nx = nx; this.ny = ny; this.h = h; this.invH = 1 / h;
-    const n = nx * ny;
-    this.nCells = n;
-    this.u = new Float32Array(n); this.v = new Float32Array(n);
-    this.du = new Float32Array(n); this.dv = new Float32Array(n);
-    this.prevU = new Float32Array(n); this.prevV = new Float32Array(n);
-    this.s = new Float32Array(n);
-    this.cellType = new Int32Array(n);
-    this.density = new Float32Array(n);
-    this.solid = new Uint8Array(n);
-    // Obstacles live in a signed distance field at twice the grid resolution
-    // (metres, positive in open water). Brush strokes edit it directly.
-    this.F = 2; this.fnx = nx * 2; this.fny = ny * 2; this.fh = h / 2;
+class ObstacleField {
+  constructor(nx, ny, h) {
+    this.nx = nx; this.ny = ny; this.h = h;
+    this.solid = new Uint8Array(nx * ny);
+    this.s = new Float32Array(nx * ny);
+    this.fnx = nx * 2; this.fny = ny * 2; this.fh = h / 2;
     this.sdf = new Float32Array(this.fnx * this.fny);
-
-    this.r = 0.3 * h;
-    this.restDensity = 1 / (0.6 * 0.3 * Math.sqrt(3)) * 0.92;
-    this.maxP = maxP; this.numP = 0;
-    this.pos = new Float32Array(2 * maxP);
-    this.vel = new Float32Array(2 * maxP);
-    this.col = new Float32Array(3 * maxP);
-
-    this.pInv = 1 / (2.2 * this.r);
-    this.pnx = Math.floor(nx * h * this.pInv) + 1;
-    this.pny = Math.floor(ny * h * this.pInv) + 1;
-    const pc = this.pnx * this.pny;
-    this.cellCount = new Int32Array(pc);
-    this.firstCell = new Int32Array(pc + 1);
-    this.cellIds = new Int32Array(maxP);
-
-    this.gravity = -9.81;
-    this.flipRatio = 0.9;
-    this.clearSolids();
+    this.clear();
   }
 
   borderSDF(x, y) {
@@ -442,7 +439,7 @@ class Flip {
     return Math.min(x - h, (this.nx - 1) * h - x, y - h, (this.ny - 1) * h - y);
   }
 
-  clearSolids() {
+  clear() {
     const { fnx, fny, fh, sdf } = this;
     for (let i = 0; i < fnx; i++) for (let j = 0; j < fny; j++) sdf[i * fny + j] = this.borderSDF((i + 0.5) * fh, (j + 0.5) * fh);
     this.updateSolids();
@@ -486,6 +483,17 @@ class Flip {
     this.updateSolids(x0 - m, y0 - m, x1 + m, y1 + m);
   }
 
+  // Copy obstacles from another field; where the old value only reflects the old tank wall, use the new wall.
+  resampleFrom(old) {
+    const { fnx, fny, fh, sdf } = this;
+    for (let i = 0; i < fnx; i++) for (let j = 0; j < fny; j++) {
+      const x = (i + 0.5) * fh, y = (j + 0.5) * fh;
+      const v = old.sampleSDF(x, y), wall = old.borderSDF(x, y);
+      sdf[i * fny + j] = Math.min(v >= wall - 1e-6 ? Infinity : v, this.borderSDF(x, y));
+    }
+    this.updateSolids();
+  }
+
   sampleSDF(x, y) {
     const fny = this.fny, sdf = this.sdf, inv = 1 / this.fh;
     const fx = clamp(x * inv - 0.5, 0, this.fnx - 1.001);
@@ -493,6 +501,48 @@ class Flip {
     const i = fx | 0, j = fy | 0, tx = fx - i, ty = fy - j, c = i * fny + j;
     return (1 - tx) * ((1 - ty) * sdf[c] + ty * sdf[c + 1]) + tx * ((1 - ty) * sdf[c + fny] + ty * sdf[c + fny + 1]);
   }
+}
+
+// ---------------------------------------------------------------------------
+// CPU FLIP fluid: particles carry the water, a MAC grid enforces incompressibility.
+// Grid index is i * ny + j, with j pointing up.
+// ---------------------------------------------------------------------------
+const FLUID = 0, AIR = 1, SOLID = 2;
+
+class Flip {
+  constructor(obs, maxP) {
+    const nx = obs.nx, ny = obs.ny, h = obs.h;
+    this.obs = obs;
+    this.nx = nx; this.ny = ny; this.h = h; this.invH = 1 / h;
+    const n = nx * ny;
+    this.nCells = n;
+    this.u = new Float32Array(n); this.v = new Float32Array(n);
+    this.du = new Float32Array(n); this.dv = new Float32Array(n);
+    this.prevU = new Float32Array(n); this.prevV = new Float32Array(n);
+    this.s = obs.s;
+    this.cellType = new Int32Array(n);
+    this.density = new Float32Array(n);
+
+    this.r = 0.3 * h;
+    this.restDensity = REST_DENSITY;
+    this.maxP = maxP; this.numP = 0;
+    this.pos = new Float32Array(2 * maxP);
+    this.vel = new Float32Array(2 * maxP);
+    this.col = new Float32Array(3 * maxP);
+
+    this.pInv = 1 / (2.2 * this.r);
+    this.pnx = Math.floor(nx * h * this.pInv) + 1;
+    this.pny = Math.floor(ny * h * this.pInv) + 1;
+    const pc = this.pnx * this.pny;
+    this.cellCount = new Int32Array(pc);
+    this.firstCell = new Int32Array(pc + 1);
+    this.cellIds = new Int32Array(maxP);
+
+    this.gravity = -9.81;
+    this.flipRatio = 0.9;
+  }
+
+  sampleSDF(x, y) { return this.obs.sampleSDF(x, y); }
 
   addParticle(x, y, vx, vy, r, g, b) {
     if (this.numP >= this.maxP) return false;
@@ -723,258 +773,6 @@ class Flip {
   }
 }
 
-// Grid-dependent globals, rebuilt when the quality changes.
-let NX, NY, CELL, TANK_W, MAX_P, sim, PARTICLE_AREA, LITRES_PER_PARTICLE;
-let dispCol = new Float32Array(0);   // per-particle display colour for the renderers
-
-function buildWorld(key) {
-  const q = QUALITY[key];
-  NY = q.ny; NX = Math.round(NY * ASPECT);
-  CELL = TANK_H / NY; TANK_W = NX * CELL; MAX_P = q.cap;
-  sim = new Flip(NX, NY, CELL, MAX_P);
-  sim.gravity = -9.81 * +$('grav').value;
-  sim.flipRatio = +$('flip').value;
-  PARTICLE_AREA = CELL * CELL / sim.restDensity;
-  LITRES_PER_PARTICLE = PARTICLE_AREA * DEPTH * 1000;
-  dispCol = new Float32Array(3 * MAX_P);
-  $('gridInfo').textContent = `FLIP 流體 · ${NX}×${NY} 格`;
-  $('qualityInfo').textContent = `網格 ${NX} × ${NY} · 最多 ${MAX_P.toLocaleString('en-US')} 顆粒子`;
-  if (canvasRenderer) canvasRenderer = makeCanvasRenderer();
-}
-
-// ---------------------------------------------------------------------------
-// Devices
-// ---------------------------------------------------------------------------
-const PALETTE = [
-  { name: '藍', rgb: [0.20, 0.50, 0.93] },
-  { name: '青', rgb: [0.10, 0.72, 0.72] },
-  { name: '玫瑰', rgb: [0.91, 0.30, 0.55] },
-  { name: '琥珀', rgb: [0.96, 0.64, 0.18] },
-  { name: '草綠', rgb: [0.42, 0.78, 0.30] },
-];
-const NOZZLE_LEN = 0.2;
-let sources = [], drains = [];
-let selected = null;           // { kind: 'source'|'drain', obj }
-let nextId = 1;
-
-function makeSource(x, y, angleDeg, opts = {}) {
-  return { id: nextId++, x, y, angle: angleDeg * Math.PI / 180, speed: opts.speed ?? 2.5, width: opts.width ?? 0.14, color: opts.color ?? 0, on: true, acc: 0, row: 0 };
-}
-function makeDrain(x, y, opts = {}) {
-  return { id: nextId++, x, y, r: opts.r ?? 0.14, pull: opts.pull ?? 1, flow: 0 };
-}
-const sourceFlow = (s) => s.width * s.speed * DEPTH * 1000;   // L/s
-
-function emit(dt) {
-  // Rows of particles laid across the nozzle at the packing spacing, so the jet leaves as a clean sheet.
-  const spacing = 2 * sim.r, rowGap = Math.sqrt(3) * sim.r;
-  for (const s of sources) {
-    if (!s.on) continue;
-    const dx = Math.cos(s.angle), dy = Math.sin(s.angle), nx = -dy, ny = dx;
-    const mx = s.x + dx * NOZZLE_LEN * 0.5, my = s.y + dy * NOZZLE_LEN * 0.5;
-    const count = Math.max(1, Math.round(s.width / spacing));
-    const [cr, cg, cb] = PALETTE[s.color].rgb;
-    s.acc += s.speed * dt;
-    while (s.acc >= rowGap) {
-      s.acc -= rowGap;
-      if (sim.numP + count > sim.maxP) { s.acc = 0; break; }
-      const shift = (s.row++ & 1) ? 0.25 : -0.25;
-      for (let k = 0; k < count; k++) {
-        const t = ((k + 0.5 + shift) / count - 0.5) * s.width + (Math.random() - 0.5) * 0.1 * sim.r;
-        const px = mx + nx * t + dx * s.acc, py = my + ny * t + dy * s.acc;
-        if (sim.sampleSDF(px, py) < sim.r) continue;
-        sim.addParticle(px, py, dx * s.speed, dy * s.speed, cr, cg, cb);
-      }
-    }
-  }
-}
-
-let drainedThisFrame = 0;
-function drainWater(dt) {
-  const { pos, vel } = sim;
-  for (const d of drains) {
-    const r2 = d.r * d.r, reach = d.r * 2.6, reach2 = reach * reach;
-    let removed = 0;
-    for (let i = sim.numP - 1; i >= 0; i--) {
-      const dx = pos[2 * i] - d.x, dy = pos[2 * i + 1] - d.y, q = dx * dx + dy * dy;
-      if (q < r2) { sim.removeParticle(i); removed++; continue; }
-      if (d.pull > 0 && q < reach2) {
-        const dist = Math.sqrt(q), f = d.pull * (1 - dist / reach) * 14 * dt;
-        vel[2 * i] -= dx / dist * f; vel[2 * i + 1] -= dy / dist * f;
-      }
-    }
-    d.flow = d.flow * 0.9 + (removed * LITRES_PER_PARTICLE / dt) * 0.1;
-    drainedThisFrame += removed;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Painting helpers (world coordinates, metres)
-// ---------------------------------------------------------------------------
-let solidsDirty = true;   // obstacle field changed since the renderer last saw it
-function refreshSolids() {
-  solidsDirty = false;
-  if (glr) glr.uploadSDF(); else canvasRenderer.drawObstacles();
-}
-function paintCircle(x, y, R, val) {
-  sim.stampCircle(x, y, R, val === 1);
-  solidsDirty = true;
-}
-function paintSegment(x0, y0, x1, y1, R, val) {
-  const len = Math.hypot(x1 - x0, y1 - y0), steps = Math.max(1, Math.ceil(len / (R * 0.3)));
-  for (let k = 0; k <= steps; k++) { const t = k / steps; paintCircle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, R, val); }
-}
-function paintRect(x0, y0, x1, y1) {
-  sim.stampBox(x0, y0, x1, y1);
-  solidsDirty = true;
-}
-function fillWater(x0, y0, x1, y1, rgb) {
-  refreshSolids();
-  const r = sim.r, dx = 2 * r, dy = Math.sqrt(3) * r;
-  let row = 0;
-  for (let y = y0 + r; y < y1; y += dy, row++) {
-    for (let x = x0 + r + (row % 2 ? r : 0); x < x1; x += dx) {
-      if (sim.sampleSDF(x, y) < r) continue;
-      if (!sim.addParticle(x, y, 0, 0, rgb[0], rgb[1], rgb[2])) return;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Scenes (positions as fractions of the tank so they fit any aspect)
-// ---------------------------------------------------------------------------
-const SCENES = {
-  cascade() {
-    const W = TANK_W, H = TANK_H;
-    for (let k = 0; k < 4; k++) {
-      const x0 = W * (0.04 + k * 0.205), x1 = x0 + W * 0.19, y = H * (0.74 - k * 0.165);
-      paintSegment(x0, y + 0.02, x1, y - 0.03, 0.045, 1);
-      paintSegment(x1, y - 0.03, x1, y + 0.11, 0.04, 1);
-    }
-    paintCircle(W * 0.5, 0.12, 0.2, 1);
-    sources.push(makeSource(W * 0.07, H * 0.9, -15, { speed: 2.2, width: 0.14, color: 0 }));
-    drains.push(makeDrain(W * 0.93, 0.18, { r: 0.13, pull: 1 }));
-    fillWater(CELL, CELL, W - CELL, H * 0.1, PALETTE[1].rgb);
-  },
-  funnel() {
-    const W = TANK_W, H = TANK_H;
-    paintSegment(W * 0.14, H * 0.66, W * 0.45, H * 0.45, 0.045, 1);
-    paintSegment(W * 0.86, H * 0.66, W * 0.55, H * 0.45, 0.045, 1);
-    for (let row = 0; row < 3; row++) {
-      const cols = 6 - (row % 2), y = H * (0.33 - row * 0.085);
-      for (let c = 0; c < cols; c++) paintCircle(W * 0.5 + (c - (cols - 1) / 2) * W * 0.085, y, 0.055, 1);
-    }
-    sources.push(makeSource(W * 0.06, H * 0.86, -8, { speed: 2.4, width: 0.12, color: 0 }));
-    sources.push(makeSource(W * 0.94, H * 0.86, 188, { speed: 2.4, width: 0.12, color: 2 }));
-    drains.push(makeDrain(W * 0.5, 0.16, { r: 0.15, pull: 1.2 }));
-    fillWater(CELL, CELL, W - CELL, H * 0.06, PALETTE[3].rgb);
-  },
-  dam() {
-    const W = TANK_W, H = TANK_H;
-    paintCircle(W * 0.58, 0.28, 0.22, 1);
-    paintRect(W * 0.8, CELL, W * 0.84, H * 0.22);
-    fillWater(CELL, CELL, W * 0.36, H * 0.72, PALETTE[0].rgb);
-  },
-  empty() {
-    const W = TANK_W, H = TANK_H;
-    sources.push(makeSource(W * 0.12, H * 0.8, -30, { speed: 2.6, width: 0.14, color: 0 }));
-    fillWater(CELL, CELL, W - CELL, H * 0.12, PALETTE[0].rgb);
-  },
-};
-
-function loadScene(name) {
-  sim.numP = 0;
-  sim.u.fill(0); sim.v.fill(0);
-  sources = []; drains = []; select(null);
-  sim.clearSolids();
-  SCENES[name]();
-  refreshSolids();
-}
-
-// Switch grid resolution, carrying over obstacles, devices and water.
-function setQuality(key) {
-  if (key === qualityKey) return;
-  const old = sim, oldArea = PARTICLE_AREA;
-  qualityKey = key;
-  try { localStorage.setItem('flowtank.quality', key); } catch (e) { /* storage unavailable */ }
-  buildWorld(key);
-  // Resample the obstacle field; where the old value only reflects the old tank wall, use the new wall.
-  for (let i = 0; i < sim.fnx; i++) for (let j = 0; j < sim.fny; j++) {
-    const x = (i + 0.5) * sim.fh, y = (j + 0.5) * sim.fh;
-    const v = old.sampleSDF(x, y), wall = old.borderSDF(x, y);
-    sim.sdf[i * sim.fny + j] = Math.min(v >= wall - 1e-6 ? Infinity : v, sim.borderSDF(x, y));
-  }
-  sim.updateSolids();
-  const ratio = oldArea / PARTICLE_AREA, whole = Math.floor(ratio), frac = ratio - whole;
-  for (let p = 0; p < old.numP && sim.numP < sim.maxP; p++) {
-    const n = whole + (Math.random() < frac ? 1 : 0);
-    for (let k = 0; k < n; k++) {
-      const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * old.r * 1.2;
-      const x = old.pos[2 * p] + Math.cos(a) * rr, y = old.pos[2 * p + 1] + Math.sin(a) * rr;
-      if (sim.sampleSDF(x, y) < 0) continue;
-      sim.addParticle(x, y, old.vel[2 * p], old.vel[2 * p + 1], old.col[3 * p], old.col[3 * p + 1], old.col[3 * p + 2]);
-    }
-  }
-  for (let k = 0; k < 4; k++) { sim.pushApart(2); sim.collisions(); }
-  for (const s of sources) { s.x = clamp(s.x, CELL * 1.5, TANK_W - CELL * 1.5); s.acc = 0; }
-  for (const d of drains) d.x = clamp(d.x, CELL * 1.5, TANK_W - CELL * 1.5);
-  resize();
-  refreshSolids();
-  syncQualityUI();
-}
-
-// ---------------------------------------------------------------------------
-// View: three stacked canvases — background, WebGL (water + obstacles), 2D overlay (devices).
-// ---------------------------------------------------------------------------
-const view = { dpr: 1, cw: 1, ch: 1, tx: 0, ty: 0, tw: 1, th: 1, s: 1 };
-const sx = (x) => view.tx + x * view.s;
-const sy = (y) => view.ty + (TANK_H - y) * view.s;
-
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = wrap.clientWidth, h = wrap.clientHeight;
-  view.dpr = dpr; view.cw = Math.max(1, Math.round(w * dpr)); view.ch = Math.max(1, Math.round(h * dpr));
-  for (const c of [bgCanvas, glCanvas, canvas]) { c.width = view.cw; c.height = view.ch; }
-  const pad = 10 * dpr;
-  const s = Math.min((view.cw - 2 * pad) / TANK_W, (view.ch - 2 * pad) / TANK_H);
-  view.tw = Math.round(TANK_W * s); view.th = Math.round(TANK_H * s);
-  view.s = view.th / TANK_H;
-  view.tx = Math.round((view.cw - view.tw) / 2); view.ty = Math.round((view.ch - view.th) / 2);
-  drawBackground();
-}
-
-function drawBackground() {
-  const g = bgCanvas.getContext('2d');
-  g.clearRect(0, 0, view.cw, view.ch);
-  const x0 = view.tx, y0 = view.ty, w = view.tw, h = view.th;
-  const grad = g.createLinearGradient(0, y0, 0, y0 + h);
-  grad.addColorStop(0, '#16262d'); grad.addColorStop(1, '#0a1419');
-  g.fillStyle = grad; g.fillRect(x0, y0, w, h);
-  // 10 cm grid, stronger every 50 cm
-  const line = Math.max(1, Math.round(view.dpr * 0.6));
-  for (let k = 0; k * 0.1 <= TANK_W + 1e-6; k++) {
-    g.fillStyle = k % 5 === 0 ? 'rgba(170,210,225,0.075)' : 'rgba(170,210,225,0.03)';
-    g.fillRect(Math.round(sx(k * 0.1)), y0, line, h);
-  }
-  for (let k = 0; k * 0.1 <= TANK_H + 1e-6; k++) {
-    g.fillStyle = k % 5 === 0 ? 'rgba(170,210,225,0.075)' : 'rgba(170,210,225,0.03)';
-    g.fillRect(x0, Math.round(sy(k * 0.1)), w, line);
-  }
-  // depth ruler on the inside of the left wall
-  const fs = Math.round(10 * view.dpr);
-  g.font = `500 ${fs}px "IBM Plex Mono", ui-monospace, monospace`;
-  g.textBaseline = 'middle';
-  for (let k = 1; k * 0.1 < TANK_H - CELL; k++) {
-    const y = sy(k * 0.1), xl = sx(CELL);
-    const major = k % 5 === 0;
-    g.fillStyle = major ? 'rgba(210,230,236,0.55)' : 'rgba(210,230,236,0.3)';
-    g.fillRect(xl, Math.round(y), (major ? 12 : 6) * view.dpr, Math.max(1, view.dpr));
-    if (major) g.fillText(`${k * 10}`, xl + 15 * view.dpr, y);
-  }
-  g.fillStyle = 'rgba(210,230,236,0.45)';
-  g.fillText('cm', sx(CELL) + 15 * view.dpr, sy(TANK_H - CELL) + 10 * view.dpr);
-}
-
 function speedRamp(sp, out, o) {
   const t = clamp(sp / 4.5, 0, 1);
   if (t < 0.5) { const k = t / 0.5; out[o] = 0.08 + 0.04 * k; out[o + 1] = 0.26 + 0.42 * k; out[o + 2] = 0.62 + 0.24 * k; }
@@ -982,24 +780,110 @@ function speedRamp(sp, out, o) {
 }
 
 let viewMode = 'surface', colorMode = 'source';
-function computeDisplayColors() {
-  const { vel, col } = sim;
-  for (let p = 0; p < sim.numP; p++) {
-    const vx = vel[2 * p], vy = vel[2 * p + 1], sp = Math.sqrt(vx * vx + vy * vy), o = 3 * p;
-    if (colorMode === 'speed') { speedRamp(sp, dispCol, o); continue; }
-    const f = smooth(2.6, 5.5, sp) * 0.55;          // fast water whitens like aerated foam
-    dispCol[o] = col[o] + (1 - col[o]) * f;
-    dispCol[o + 1] = col[o + 1] + (1 - col[o + 1]) * f;
-    dispCol[o + 2] = col[o + 2] + (1 - col[o + 2]) * f;
+
+// ---------------------------------------------------------------------------
+// CPU engine: Flip on the main thread, drawn with WebGL2 (or Canvas 2D as a last resort).
+// ---------------------------------------------------------------------------
+class CpuEngine {
+  constructor(key) {
+    const q = QUALITY.cpu[key];
+    this.kind = 'cpu'; this.key = key; this.q = q;
+    this.ny = q.ny; this.nx = Math.round(q.ny * ASPECT); this.h = TANK_H / this.ny; this.width = this.nx * this.h;
+    this.maxP = q.cap;
+    this.obs = new ObstacleField(this.nx, this.ny, this.h);
+    this.sim = new Flip(this.obs, q.cap);
+    this.r = this.sim.r;
+    this.restDensity = REST_DENSITY;
+    this.particleArea = this.h * this.h / REST_DENSITY;
+    this.dispCol = new Float32Array(3 * q.cap);
+    this.drainedTotal = 0;
+    this.canvasRenderer = getGLRenderer() ? null : makeCanvasRenderer(this);
   }
+  get numP() { return this.sim.numP; }
+  spawn(x, y, vx, vy, r, g, b) { return this.sim.addParticle(x, y, vx, vy, r, g, b); }
+  clearWater() { this.sim.numP = 0; }
+  obstaclesChanged() {
+    const glr = getGLRenderer();
+    if (glr) glr.uploadSDF(this); else this.canvasRenderer.drawObstacles();
+  }
+
+  step(dt, input) {
+    const sim = this.sim;
+    sim.gravity = input.gravity; sim.flipRatio = input.flipRatio;
+    if (input.brush) this.applyBrush(input.brush);
+    const sub = clamp(Math.ceil(sim.maxSpeed() * dt / (2 * this.h)), 1, 3);
+    for (let k = 0; k < sub; k++) sim.step(dt / sub);
+    this.drain(dt, input.drains);
+  }
+
+  applyBrush(b) {
+    const sim = this.sim, { pos, vel } = sim, R2 = b.R * b.R;
+    if (b.mode === 'stir') {
+      for (let i = 0; i < sim.numP; i++) {
+        const dx = pos[2 * i] - b.x, dy = pos[2 * i + 1] - b.y, q = dx * dx + dy * dy;
+        if (q > R2) continue;
+        const w = (1 - Math.sqrt(q) / b.R) * 0.35;
+        vel[2 * i] += (b.vx - vel[2 * i]) * w;
+        vel[2 * i + 1] += (b.vy - vel[2 * i + 1]) * w;
+      }
+    } else {
+      for (let i = sim.numP - 1; i >= 0; i--) {
+        const dx = pos[2 * i] - b.x, dy = pos[2 * i + 1] - b.y;
+        if (dx * dx + dy * dy < R2) sim.removeParticle(i);
+      }
+    }
+  }
+
+  drain(dt, drains) {
+    const sim = this.sim, { pos, vel } = sim;
+    for (const d of drains) {
+      const r2 = d.r * d.r, reach = d.r * 2.6, reach2 = reach * reach;
+      for (let i = sim.numP - 1; i >= 0; i--) {
+        const dx = pos[2 * i] - d.x, dy = pos[2 * i + 1] - d.y, q = dx * dx + dy * dy;
+        if (q < r2) { sim.removeParticle(i); this.drainedTotal++; continue; }
+        if (d.pull > 0 && q < reach2) {
+          const dist = Math.sqrt(q), f = d.pull * (1 - dist / reach) * 14 * dt;
+          vel[2 * i] -= dx / dist * f; vel[2 * i + 1] -= dy / dist * f;
+        }
+      }
+    }
+  }
+
+  relax() { for (let k = 0; k < 4; k++) { this.sim.pushApart(2); this.sim.collisions(); } }
+
+  render() {
+    const { vel, col } = this.sim, out = this.dispCol;
+    for (let p = 0; p < this.sim.numP; p++) {
+      const vx = vel[2 * p], vy = vel[2 * p + 1], sp = Math.sqrt(vx * vx + vy * vy), o = 3 * p;
+      if (colorMode === 'speed') { speedRamp(sp, out, o); continue; }
+      const f = smooth(2.6, 5.5, sp) * 0.55;          // fast water whitens like aerated foam
+      out[o] = col[o] + (1 - col[o]) * f;
+      out[o + 1] = col[o + 1] + (1 - col[o + 1]) * f;
+      out[o + 2] = col[o + 2] + (1 - col[o + 2]) * f;
+    }
+    const glr = getGLRenderer();
+    if (glr) glr.draw(this); else this.canvasRenderer.draw();
+  }
+
+  async exportParticles() {
+    const n = this.sim.numP;
+    return { n, r: this.r, pos: this.sim.pos.slice(0, 2 * n), vel: this.sim.vel.slice(0, 2 * n), col: this.sim.col.slice(0, 3 * n) };
+  }
+
+  destroy() {}
 }
 
 // ---------------------------------------------------------------------------
-// WebGL renderer: particles are splatted as smooth kernels into a half-float
-// field, then a full-resolution pass extracts an anti-aliased, shaded surface.
-// Obstacles are shaded straight from the signed distance field.
+// WebGL2 renderer for the CPU engine: particles are splatted as smooth kernels
+// into a half-float field, then a full-resolution pass extracts a shaded surface.
 // ---------------------------------------------------------------------------
-const KERNEL = 3.2;   // splat radius in particle radii
+let glrState;   // undefined: not tried yet, null: unavailable
+function getGLRenderer() {
+  if (glrState === undefined) {
+    try { glrState = createGLRenderer(); } catch (err) { console.warn('WebGL2 renderer unavailable:', err); glrState = null; }
+  }
+  return glrState;
+}
 
 function createGLRenderer() {
   const gl = glCanvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: false });
@@ -1139,8 +1023,8 @@ void main(){
 
   const sdfTex = gl.createTexture();
   let sdfBuf = new Float32Array(0);
-  function uploadSDF() {
-    const { fnx: nx, fny: ny, sdf } = sim;
+  function uploadSDF(e) {
+    const { fnx: nx, fny: ny, sdf } = e.obs;
     if (sdfBuf.length !== nx * ny) sdfBuf = new Float32Array(nx * ny);
     for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) sdfBuf[j * nx + i] = sdf[i * ny + j];
     gl.bindTexture(gl.TEXTURE_2D, sdfTex);
@@ -1149,8 +1033,8 @@ void main(){
     texParams(gl.LINEAR);
   }
 
-  function draw() {
-    const n = sim.numP;
+  function draw(e) {
+    const sim = e.sim, n = sim.numP, W = e.width;
     const tyGL = view.ch - (view.ty + view.th);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, view.cw, view.ch);
@@ -1158,20 +1042,19 @@ void main(){
     gl.enable(gl.BLEND);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, sim.pos.subarray(0, 2 * n), gl.DYNAMIC_DRAW);
-    gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.bufferData(gl.ARRAY_BUFFER, dispCol.subarray(0, 3 * n), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.bufferData(gl.ARRAY_BUFFER, e.dispCol.subarray(0, 3 * n), gl.DYNAMIC_DRAW);
 
     if (viewMode === 'surface') {
-      const q = QUALITY[qualityKey].field;
-      const w = Math.max(16, Math.round(view.tw / view.dpr * q)), h = Math.max(16, Math.round(view.th / view.dpr * q));
+      const w = Math.max(16, Math.round(view.tw / view.dpr * e.q.field)), h = Math.max(16, Math.round(view.th / view.dpr * e.q.field));
       ensureField(w, h);
-      const kr = KERNEL * sim.r;                       // world radius of a splat
+      const kr = KERNEL * sim.r;
       gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
       gl.viewport(0, 0, w, h);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.blendFunc(gl.ONE, gl.ONE);
       gl.useProgram(splat.p);
-      gl.uniform2f(splat.u.uWorld, TANK_W, TANK_H);
-      gl.uniform1f(splat.u.uSize, Math.min(maxPoint, 2 * kr * w / TANK_W));
+      gl.uniform2f(splat.u.uWorld, W, TANK_H);
+      gl.uniform1f(splat.u.uSize, Math.min(maxPoint, 2 * kr * w / W));
       gl.bindVertexArray(ptVAO);
       gl.drawArrays(gl.POINTS, 0, n);
 
@@ -1183,15 +1066,15 @@ void main(){
       gl.uniform1i(surface.u.uField, 0);
       gl.uniform2f(surface.u.uTexel, 1 / w, 1 / h);
       // field value deep inside water: particle density × ∫(1-q²)³ over the splat disc
-      gl.uniform1f(surface.u.uNorm, 1 / (sim.restDensity / (CELL * CELL) * Math.PI * kr * kr / 4));
-      gl.uniform1f(surface.u.uBump, kr * w / TANK_W * 0.5);
+      gl.uniform1f(surface.u.uNorm, 1 / (REST_DENSITY / (e.h * e.h) * Math.PI * kr * kr / 4));
+      gl.uniform1f(surface.u.uBump, kr * w / W * 0.5);
       gl.bindVertexArray(quadVAO);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     } else {
       gl.viewport(view.tx, tyGL, view.tw, view.th);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       gl.useProgram(dots.p);
-      gl.uniform2f(dots.u.uWorld, TANK_W, TANK_H);
+      gl.uniform2f(dots.u.uWorld, W, TANK_H);
       gl.uniform1f(dots.u.uSize, Math.min(maxPoint, Math.max(2, 2 * sim.r * view.s)));
       gl.bindVertexArray(ptVAO);
       gl.drawArrays(gl.POINTS, 0, n);
@@ -1202,9 +1085,9 @@ void main(){
     gl.useProgram(rock.p);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sdfTex);
     gl.uniform1i(rock.u.uSdf, 0);
-    gl.uniform2f(rock.u.uWorld, TANK_W, TANK_H);
+    gl.uniform2f(rock.u.uWorld, W, TANK_H);
     gl.uniform1f(rock.u.uPx, 1 / view.s);
-    gl.uniform2f(rock.u.uE, 0.5 / sim.fnx, 0.5 / sim.fny);
+    gl.uniform2f(rock.u.uE, 0.5 / e.obs.fnx, 0.5 / e.obs.fny);
     gl.uniform1f(rock.u.uBevel, 0.03);
     gl.bindVertexArray(quadVAO);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -1218,7 +1101,8 @@ void main(){
 // ---------------------------------------------------------------------------
 // Canvas 2D fallback renderer for browsers without WebGL2.
 // ---------------------------------------------------------------------------
-function makeCanvasRenderer() {
+function makeCanvasRenderer(e) {
+  const NX = e.nx, NY = e.ny, CELL = e.h, sim = e.sim, obs = e.obs;
   const OF = 4, OW = NX * OF, OH = NY * OF;
   const obsLayer = document.createElement('canvas'); obsLayer.width = OW; obsLayer.height = OH;
   const obsCtx = obsLayer.getContext('2d'), obsImg = obsCtx.createImageData(OW, OH);
@@ -1228,16 +1112,16 @@ function makeCanvasRenderer() {
   const waterCtx = waterLayer.getContext('2d'), waterImg = waterCtx.createImageData(RW, RH);
 
   function drawObstacles() {
-    const data = obsImg.data, tex = CELL / OF, e = 0.35 * CELL;
+    const data = obsImg.data, tex = CELL / OF, ep = 0.35 * CELL;
     for (let py = 0; py < OH; py++) {
       const y = TANK_H - (py + 0.5) * tex;
       for (let px = 0; px < OW; px++) {
         const x = (px + 0.5) * tex, o = 4 * (py * OW + px);
-        const d = sim.sampleSDF(x, y);
+        const d = obs.sampleSDF(x, y);
         const a = clamp(0.5 - d / tex, 0, 1);
         if (a <= 0) { data[o + 3] = 0; continue; }
-        let gx = sim.sampleSDF(x + e, y) - sim.sampleSDF(x - e, y);
-        let gy = sim.sampleSDF(x, y + e) - sim.sampleSDF(x, y - e);
+        let gx = obs.sampleSDF(x + ep, y) - obs.sampleSDF(x - ep, y);
+        let gy = obs.sampleSDF(x, y + ep) - obs.sampleSDF(x, y - ep);
         const len = Math.hypot(gx, gy) || 1; gx /= len; gy /= len;
         const bevel = 1 - smooth(0, 0.03, -d);
         const light = (gx * -0.5 + gy * 0.866) * bevel;
@@ -1264,7 +1148,7 @@ function makeCanvasRenderer() {
 
   function drawWater() {
     fD.fill(0); fR.fill(0); fG.fill(0); fB.fill(0);
-    const pos = sim.pos, k = RF / CELL;
+    const pos = sim.pos, k = RF / CELL, dispCol = e.dispCol;
     for (let p = 0; p < sim.numP; p++) {
       const gx = pos[2 * p] * k - 0.5, gy = (TANK_H - pos[2 * p + 1]) * k - 0.5;
       const i0 = clamp(Math.floor(gx), 0, RW - 2), j0 = clamp(Math.floor(gy), 0, RH - 2);
@@ -1277,7 +1161,7 @@ function makeCanvasRenderer() {
       fB[c0] += w0 * b; fB[c0 + 1] += w1 * b; fB[c0 + RW] += w2 * b; fB[c0 + RW + 1] += w3 * b;
     }
     for (let pass = 0; pass < 2; pass++) { blur(fD); blur(fR); blur(fG); blur(fB); }
-    const data = waterImg.data, norm = sim.restDensity / (RF * RF);
+    const data = waterImg.data, norm = REST_DENSITY / (RF * RF);
     for (let c = 0; c < RN; c++) {
       const o = 4 * c, dens = fD[c], d = dens / norm;
       if (d < 0.12) { data[o + 3] = 0; continue; }
@@ -1293,7 +1177,7 @@ function makeCanvasRenderer() {
   }
 
   function drawParticles() {
-    const pos = sim.pos, size = Math.max(1.5, 1.7 * sim.r * view.s), half = size / 2;
+    const pos = sim.pos, dispCol = e.dispCol, size = Math.max(1.5, 1.7 * sim.r * view.s), half = size / 2;
     for (let p = 0; p < sim.numP; p++) {
       ctx.fillStyle = `rgb(${dispCol[3 * p] * 255 | 0},${dispCol[3 * p + 1] * 255 | 0},${dispCol[3 * p + 2] * 255 | 0})`;
       ctx.fillRect(sx(pos[2 * p]) - half, sy(pos[2 * p + 1]) - half, size, size);
@@ -1306,6 +1190,1064 @@ function makeCanvasRenderer() {
     ctx.drawImage(obsLayer, view.tx, view.ty, view.tw, view.th);
   }
   return { draw, drawObstacles };
+}
+
+// ---------------------------------------------------------------------------
+// WebGPU engine: the whole FLIP step runs in compute shaders.
+//   P2G uses fixed-point atomics, the pressure solve is red-black Gauss-Seidel,
+//   neighbour search uses fixed-size bins, and dead particles are removed each
+//   frame with a prefix-sum compaction, so the particle list stays dense on the GPU.
+// ---------------------------------------------------------------------------
+const MAX_GPU_DRAINS = 16;
+const PRESSURE_ITERS_GPU = 40;
+
+const SIM_WGSL = /* wgsl */`
+struct Params {
+  nx: u32, ny: u32, pnx: u32, pny: u32,
+  fnx: u32, fny: u32, maxP: u32, numDrains: u32,
+  h: f32, invH: f32, fh: f32, r: f32,
+  dt: f32, gravity: f32, flipRatio: f32, rest: f32,
+  worldW: f32, worldH: f32, pInv: f32, overRelax: f32,
+  brushMode: u32, numSpawn: u32, frameDt: f32, vmax: f32,
+  brush: vec4f,
+  brushVel: vec4f,
+  drains: array<vec4f, 16>,
+};
+struct Particle { pos: vec2f, vel: vec2f, col: vec4f };
+
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read_write> parts: array<Particle>;
+@group(0) @binding(2) var<storage, read_write> scratch: array<Particle>;
+// ctr: [0] particle count, [1] drained total, [2] compacted count, [4..4+maxP) scan flags, then block sums
+@group(0) @binding(3) var<storage, read_write> ctr: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> spawnBuf: array<Particle>;
+// bins: per-bin counts, then K particle ids per bin
+@group(0) @binding(5) var<storage, read_write> bins: array<atomic<u32>>;
+// gi sections (n cells each): uSum, uW, vSum, vW, density, fluid flag  (fixed point)
+@group(0) @binding(6) var<storage, read_write> gi: array<atomic<i32>>;
+// gf sections: u, v, prevU, prevV, density, s (open=1), cellType
+@group(0) @binding(7) var<storage, read_write> gf: array<f32>;
+@group(0) @binding(8) var<storage, read_write> sdf: array<f32>;
+
+const K: u32 = 8u;
+const SCALE: f32 = 65536.0;
+const CT_FLUID: f32 = 0.0;
+const CT_AIR: f32 = 1.0;
+const CT_SOLID: f32 = 2.0;
+override PARITY: u32 = 0u;
+
+fn ncell() -> u32 { return P.nx * P.ny; }
+fn alive(i: u32) -> bool { return i < atomicLoad(&ctr[0]) && parts[i].col.w > 0.5; }
+
+fn sdfAt(p: vec2f) -> f32 {
+  let fx = clamp(p.x / P.fh - 0.5, 0.0, f32(P.fnx) - 1.001);
+  let fy = clamp(p.y / P.fh - 0.5, 0.0, f32(P.fny) - 1.001);
+  let i = u32(fx); let j = u32(fy);
+  let tx = fx - f32(i); let ty = fy - f32(j);
+  let c = i * P.fny + j;
+  return mix(mix(sdf[c], sdf[c + 1u], ty), mix(sdf[c + P.fny], sdf[c + P.fny + 1u], ty), tx);
+}
+
+fn binOf(p: vec2f) -> u32 {
+  let xi = u32(clamp(floor(p.x * P.pInv), 0.0, f32(P.pnx - 1u)));
+  let yi = u32(clamp(floor(p.y * P.pInv), 0.0, f32(P.pny - 1u)));
+  return xi * P.pny + yi;
+}
+
+struct W4 { c0: u32, c1: u32, c2: u32, c3: u32, w: vec4f };
+fn bilin(px: f32, py: f32) -> W4 {
+  let x0 = min(u32(floor(px * P.invH)), P.nx - 2u);
+  let tx = (px - f32(x0) * P.h) * P.invH;
+  let x1 = min(x0 + 1u, P.nx - 2u);
+  let y0 = min(u32(floor(py * P.invH)), P.ny - 2u);
+  let ty = (py - f32(y0) * P.h) * P.invH;
+  let y1 = min(y0 + 1u, P.ny - 2u);
+  let sx = 1.0 - tx; let sy = 1.0 - ty;
+  return W4(x0 * P.ny + y0, x1 * P.ny + y0, x1 * P.ny + y1, x0 * P.ny + y1, vec4f(sx * sy, tx * sy, tx * ty, sx * ty));
+}
+
+fn clampToGrid(p: vec2f) -> vec2f {
+  return vec2f(clamp(p.x, P.h, f32(P.nx - 1u) * P.h), clamp(p.y, P.h, f32(P.ny - 1u) * P.h));
+}
+
+fn addFixed(idx: u32, v: f32) { atomicAdd(&gi[idx], i32(round(v * SCALE))); }
+
+@compute @workgroup_size(64) fn spawnParticles(@builtin(global_invocation_id) g: vec3u) {
+  let k = g.x;
+  if (k >= P.numSpawn) { return; }
+  let idx = atomicAdd(&ctr[0], 1u);
+  if (idx >= P.maxP) { atomicSub(&ctr[0], 1u); return; }
+  parts[idx] = spawnBuf[k];
+}
+
+@compute @workgroup_size(64) fn integrate(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  var v = parts[i].vel;
+  v.y += P.gravity * P.dt;
+  let s = length(v);
+  if (s > P.vmax) { v *= P.vmax / s; }
+  parts[i].vel = v;
+  parts[i].pos += v * P.dt;
+}
+
+@compute @workgroup_size(64) fn clearBins(@builtin(global_invocation_id) g: vec3u) {
+  if (g.x < P.pnx * P.pny) { atomicStore(&bins[g.x], 0u); }
+}
+
+@compute @workgroup_size(64) fn binInsert(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  let b = binOf(parts[i].pos);
+  let slot = atomicAdd(&bins[b], 1u);
+  if (slot < K) { atomicStore(&bins[P.pnx * P.pny + b * K + slot], i); }
+}
+
+// Jacobi version of "push particles apart": each particle moves itself by half of every overlap.
+@compute @workgroup_size(64) fn separate(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  let pi = parts[i].pos;
+  var ci = parts[i].col;
+  let minD = 2.0 * P.r;
+  var disp = vec2f(0.0);
+  let bx = i32(floor(pi.x * P.pInv));
+  let by = i32(floor(pi.y * P.pInv));
+  let nb = P.pnx * P.pny;
+  for (var dx = -1; dx <= 1; dx++) {
+    for (var dy = -1; dy <= 1; dy++) {
+      let x = bx + dx; let y = by + dy;
+      if (x < 0 || y < 0 || x >= i32(P.pnx) || y >= i32(P.pny)) { continue; }
+      let b = u32(x) * P.pny + u32(y);
+      let cnt = min(atomicLoad(&bins[b]), K);
+      for (var k = 0u; k < cnt; k++) {
+        let j = atomicLoad(&bins[nb + b * K + k]);
+        if (j == i) { continue; }
+        let d = parts[j].pos - pi;
+        let d2 = dot(d, d);
+        if (d2 >= minD * minD || d2 == 0.0) { continue; }
+        let dist = sqrt(d2);
+        disp -= d * (0.5 * (minD - dist) / dist);
+        ci = vec4f(ci.rgb + (parts[j].col.rgb - ci.rgb) * 0.001, ci.w);
+      }
+    }
+  }
+  let len = length(disp);
+  if (len > P.r) { disp *= P.r / len; }
+  scratch[i].pos = pi + disp;
+  scratch[i].col = ci;
+}
+
+@compute @workgroup_size(64) fn applySep(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  parts[i].pos = scratch[i].pos;
+  parts[i].col = vec4f(scratch[i].col.rgb, 1.0);
+}
+
+@compute @workgroup_size(64) fn collide(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  var p = parts[i].pos;
+  var v = parts[i].vel;
+  let r = P.r; let h = P.h;
+  let d = sdfAt(p);
+  if (d < r) {
+    if (d < -4.0 * h) { parts[i].col.w = 0.0; return; }
+    let e = 0.3 * h;
+    var gr = vec2f(sdfAt(p + vec2f(e, 0.0)) - sdfAt(p - vec2f(e, 0.0)), sdfAt(p + vec2f(0.0, e)) - sdfAt(p - vec2f(0.0, e)));
+    let len = length(gr);
+    if (len > 1e-9) {
+      gr /= len;
+      p += gr * (r - d);
+      let vn = dot(v, gr);
+      if (vn < 0.0) { v -= vn * gr; }
+    }
+  }
+  let lo = vec2f(h + r);
+  let hi = vec2f(f32(P.nx - 1u) * h - r, f32(P.ny - 1u) * h - r);
+  if (p.x < lo.x) { p.x = lo.x; v.x = 0.0; }
+  if (p.x > hi.x) { p.x = hi.x; v.x = 0.0; }
+  if (p.y < lo.y) { p.y = lo.y; v.y = 0.0; }
+  if (p.y > hi.y) { p.y = hi.y; v.y = 0.0; }
+  parts[i].pos = p;
+  parts[i].vel = v;
+}
+
+@compute @workgroup_size(64) fn clearGrid(@builtin(global_invocation_id) g: vec3u) {
+  if (g.x < 6u * ncell()) { atomicStore(&gi[g.x], 0); }
+}
+
+@compute @workgroup_size(64) fn p2g(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  let n = ncell();
+  let raw = parts[i].pos;
+  let vel = parts[i].vel;
+  let ci = u32(clamp(floor(raw.x * P.invH), 0.0, f32(P.nx - 1u)));
+  let cj = u32(clamp(floor(raw.y * P.invH), 0.0, f32(P.ny - 1u)));
+  atomicStore(&gi[5u * n + ci * P.ny + cj], 1);
+  let p = clampToGrid(raw);
+  let h2 = 0.5 * P.h;
+  // u faces sit at (i*h, (j+0.5)*h), v faces at ((i+0.5)*h, j*h)
+  let wu = bilin(p.x, p.y - h2);
+  addFixed(wu.c0, vel.x * wu.w.x); addFixed(n + wu.c0, wu.w.x);
+  addFixed(wu.c1, vel.x * wu.w.y); addFixed(n + wu.c1, wu.w.y);
+  addFixed(wu.c2, vel.x * wu.w.z); addFixed(n + wu.c2, wu.w.z);
+  addFixed(wu.c3, vel.x * wu.w.w); addFixed(n + wu.c3, wu.w.w);
+  let wv = bilin(p.x - h2, p.y);
+  addFixed(2u * n + wv.c0, vel.y * wv.w.x); addFixed(3u * n + wv.c0, wv.w.x);
+  addFixed(2u * n + wv.c1, vel.y * wv.w.y); addFixed(3u * n + wv.c1, wv.w.y);
+  addFixed(2u * n + wv.c2, vel.y * wv.w.z); addFixed(3u * n + wv.c2, wv.w.z);
+  addFixed(2u * n + wv.c3, vel.y * wv.w.w); addFixed(3u * n + wv.c3, wv.w.w);
+  let wd = bilin(p.x - h2, p.y - h2);
+  addFixed(4u * n + wd.c0, wd.w.x); addFixed(4u * n + wd.c1, wd.w.y);
+  addFixed(4u * n + wd.c2, wd.w.z); addFixed(4u * n + wd.c3, wd.w.w);
+}
+
+@compute @workgroup_size(64) fn gridNormalize(@builtin(global_invocation_id) g: vec3u) {
+  let n = ncell();
+  let c = g.x;
+  if (c >= n) { return; }
+  let i = c / P.ny; let j = c % P.ny;
+  let s = gf[5u * n + c];
+  let uw = f32(atomicLoad(&gi[n + c]));
+  let vw = f32(atomicLoad(&gi[3u * n + c]));
+  var u = 0.0; var v = 0.0;
+  if (uw > 0.0) { u = f32(atomicLoad(&gi[c])) / uw; }
+  if (vw > 0.0) { v = f32(atomicLoad(&gi[2u * n + c])) / vw; }
+  var ct = CT_AIR;
+  if (s == 0.0) { ct = CT_SOLID; } else if (atomicLoad(&gi[5u * n + c]) != 0) { ct = CT_FLUID; }
+  if (s == 0.0 || (i > 0u && gf[5u * n + c - P.ny] == 0.0)) { u = 0.0; }
+  if (s == 0.0 || (j > 0u && gf[5u * n + c - 1u] == 0.0)) { v = 0.0; }
+  gf[c] = u; gf[n + c] = v;
+  gf[2u * n + c] = u; gf[3u * n + c] = v;
+  gf[4u * n + c] = f32(atomicLoad(&gi[4u * n + c])) / SCALE;
+  gf[6u * n + c] = ct;
+}
+
+// Red-black Gauss-Seidel: same-colour cells never share a face, so they can update in parallel.
+@compute @workgroup_size(8, 8) fn pressure(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x; let j = g.y;
+  if (i < 1u || j < 1u || i >= P.nx - 1u || j >= P.ny - 1u || ((i + j) & 1u) != PARITY) { return; }
+  let n = ncell(); let ny = P.ny;
+  let c = i * ny + j;
+  if (gf[6u * n + c] != CT_FLUID) { return; }
+  let s0 = gf[5u * n + c - ny]; let s1 = gf[5u * n + c + ny];
+  let s2 = gf[5u * n + c - 1u]; let s3 = gf[5u * n + c + 1u];
+  let st = s0 + s1 + s2 + s3;
+  if (st == 0.0) { return; }
+  var div = gf[c + ny] - gf[c] + gf[n + c + 1u] - gf[n + c];
+  let compression = gf[4u * n + c] - P.rest;
+  if (compression > 0.0) { div -= compression; }
+  let p = -div / st * P.overRelax;
+  gf[c] -= s0 * p; gf[c + ny] += s1 * p;
+  gf[n + c] -= s2 * p; gf[n + c + 1u] += s3 * p;
+}
+
+fn faceValid(c: u32, off: u32, n: u32) -> f32 {
+  return select(0.0, 1.0, gf[6u * n + c] != CT_AIR || gf[6u * n + c - off] != CT_AIR);
+}
+
+fn gridToParticle(w: W4, cur: f32, sec: u32, prevSec: u32, off: u32) -> f32 {
+  let n = ncell();
+  let v = vec4f(faceValid(w.c0, off, n), faceValid(w.c1, off, n), faceValid(w.c2, off, n), faceValid(w.c3, off, n)) * w.w;
+  let ds = v.x + v.y + v.z + v.w;
+  if (ds <= 0.0) { return cur; }
+  let f = vec4f(gf[sec + w.c0], gf[sec + w.c1], gf[sec + w.c2], gf[sec + w.c3]);
+  let pf = vec4f(gf[prevSec + w.c0], gf[prevSec + w.c1], gf[prevSec + w.c2], gf[prevSec + w.c3]);
+  let pic = dot(v, f) / ds;
+  let corr = dot(v, f - pf) / ds;
+  return mix(pic, cur + corr, P.flipRatio);
+}
+
+@compute @workgroup_size(64) fn g2p(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  let n = ncell();
+  let p = clampToGrid(parts[i].pos);
+  let h2 = 0.5 * P.h;
+  var vel = parts[i].vel;
+  vel.x = gridToParticle(bilin(p.x, p.y - h2), vel.x, 0u, 2u * n, P.ny);
+  vel.y = gridToParticle(bilin(p.x - h2, p.y), vel.y, n, 3u * n, 1u);
+  parts[i].vel = vel;
+}
+
+@compute @workgroup_size(64) fn drainPass(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (!alive(i)) { return; }
+  let p = parts[i].pos;
+  var v = parts[i].vel;
+  for (var k = 0u; k < P.numDrains; k++) {
+    let d = P.drains[k];
+    let dv = p - d.xy;
+    let q = dot(dv, dv);
+    if (q < d.z * d.z) { parts[i].col.w = 0.0; atomicAdd(&ctr[1], 1u); return; }
+    let reach = d.z * 2.6;
+    if (d.w > 0.0 && q < reach * reach) {
+      let dist = sqrt(q);
+      v -= dv / dist * (d.w * (1.0 - dist / reach) * 14.0 * P.frameDt);
+    }
+  }
+  if (P.brushMode != 0u) {
+    let dv = p - P.brush.xy;
+    let q = dot(dv, dv);
+    let R = P.brush.z;
+    if (q < R * R) {
+      if (P.brushMode == 2u) { parts[i].col.w = 0.0; return; }
+      v += (P.brushVel.xy - v) * ((1.0 - sqrt(q) / R) * 0.35);
+    }
+  }
+  parts[i].vel = v;
+}
+
+// ---- compaction: scan alive flags, then scatter survivors to the front ----
+var<workgroup> wg: array<u32, 256>;
+
+@compute @workgroup_size(256) fn scanBlocks(@builtin(global_invocation_id) g: vec3u, @builtin(local_invocation_id) l: vec3u, @builtin(workgroup_id) w: vec3u) {
+  let i = g.x;
+  var a = 0u;
+  if (i < P.maxP && alive(i)) { a = 1u; }
+  wg[l.x] = a;
+  workgroupBarrier();
+  for (var off = 1u; off < 256u; off = off * 2u) {
+    var t = 0u;
+    if (l.x >= off) { t = wg[l.x - off]; }
+    workgroupBarrier();
+    wg[l.x] += t;
+    workgroupBarrier();
+  }
+  let incl = wg[l.x];
+  if (i < P.maxP) { atomicStore(&ctr[4u + i], (incl - a) | (a << 31u)); }
+  if (l.x == 255u) { atomicStore(&ctr[4u + P.maxP + w.x], incl); }
+}
+
+@compute @workgroup_size(256) fn scanSums(@builtin(local_invocation_id) l: vec3u) {
+  let nb = (P.maxP + 255u) / 256u;
+  let chunk = (nb + 255u) / 256u;
+  let base = 4u + P.maxP;
+  let start = l.x * chunk;
+  var sum = 0u;
+  for (var k = 0u; k < chunk; k++) {
+    let idx = start + k;
+    if (idx < nb) { sum += atomicLoad(&ctr[base + idx]); }
+  }
+  wg[l.x] = sum;
+  workgroupBarrier();
+  for (var off = 1u; off < 256u; off = off * 2u) {
+    var t = 0u;
+    if (l.x >= off) { t = wg[l.x - off]; }
+    workgroupBarrier();
+    wg[l.x] += t;
+    workgroupBarrier();
+  }
+  var run = wg[l.x] - sum;
+  for (var k = 0u; k < chunk; k++) {
+    let idx = start + k;
+    if (idx < nb) {
+      let v = atomicLoad(&ctr[base + idx]);
+      atomicStore(&ctr[base + idx], run);
+      run += v;
+    }
+  }
+  if (l.x == 255u) { atomicStore(&ctr[2], wg[255]); }
+}
+
+@compute @workgroup_size(64) fn scatter(@builtin(global_invocation_id) g: vec3u) {
+  let i = g.x;
+  if (i >= P.maxP) { return; }
+  let f = atomicLoad(&ctr[4u + i]);
+  if ((f >> 31u) == 0u) { return; }
+  let dst = (f & 0x7fffffffu) + atomicLoad(&ctr[4u + P.maxP + i / 256u]);
+  scratch[dst] = parts[i];
+}
+
+@compute @workgroup_size(1) fn finalize() {
+  atomicStore(&ctr[0], atomicLoad(&ctr[2]));
+}
+`;
+
+const RENDER_WGSL = /* wgsl */`
+struct Particle { pos: vec2f, vel: vec2f, col: vec4f };
+struct RP {
+  world: vec2f, kr: f32, mode: u32,
+  norm: f32, bump: f32, showWater: u32, pxWorld: f32,
+  texel: vec2f, fh: f32, fnx: u32,
+  fny: u32, _a: u32, _b: u32, _c: u32,
+};
+@group(0) @binding(0) var<uniform> R: RP;
+@group(0) @binding(1) var<storage, read> parts: array<Particle>;
+@group(0) @binding(2) var<storage, read> ctr: array<u32>;
+@group(0) @binding(3) var<storage, read> sdf: array<f32>;
+@group(0) @binding(4) var fieldTex: texture_2d<f32>;
+@group(0) @binding(5) var samp: sampler;
+
+struct VO { @builtin(position) pos: vec4f, @location(0) q: vec2f, @location(1) col: vec3f };
+
+fn dispColor(p: Particle) -> vec3f {
+  let s = length(p.vel);
+  if (R.mode == 1u) {
+    let t = clamp(s / 4.5, 0.0, 1.0);
+    if (t < 0.5) { let k = t / 0.5; return vec3f(0.08 + 0.04 * k, 0.26 + 0.42 * k, 0.62 + 0.24 * k); }
+    let k = (t - 0.5) / 0.5;
+    return vec3f(0.12 + 0.82 * k, 0.68 + 0.28 * k, 0.86 + 0.13 * k);
+  }
+  return mix(p.col.rgb, vec3f(1.0), smoothstep(2.6, 5.5, s) * 0.55);   // fast water whitens like foam
+}
+
+@vertex fn vsParticle(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VO {
+  var corners = array<vec2f, 6>(vec2f(-1.0, -1.0), vec2f(1.0, -1.0), vec2f(-1.0, 1.0), vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0));
+  var o: VO;
+  let p = parts[ii];
+  if (ii >= ctr[0] || p.col.w < 0.5) {
+    o.pos = vec4f(2.0, 2.0, 0.0, 1.0); o.q = vec2f(0.0); o.col = vec3f(0.0);
+    return o;
+  }
+  let c = corners[vi];
+  let wp = p.pos + c * R.kr;
+  o.pos = vec4f(wp / R.world * 2.0 - 1.0, 0.0, 1.0);
+  o.q = c;
+  o.col = dispColor(p);
+  return o;
+}
+
+@fragment fn fsSplat(i: VO) -> @location(0) vec4f {
+  let d2 = dot(i.q, i.q);
+  if (d2 >= 1.0) { discard; }
+  let w = (1.0 - d2) * (1.0 - d2) * (1.0 - d2);
+  return vec4f(i.col * w, w);
+}
+
+@fragment fn fsDots(i: VO) -> @location(0) vec4f {
+  let d2 = dot(i.q, i.q);
+  let a = 1.0 - smoothstep(0.75, 1.0, d2);
+  if (a <= 0.0) { discard; }
+  return vec4f(i.col * (0.8 + 0.3 * (1.0 - d2)) * a, a);
+}
+
+struct QO { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vsQuad(@builtin(vertex_index) vi: u32) -> QO {
+  var ps = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
+  var o: QO;
+  o.pos = vec4f(ps[vi], 0.0, 1.0);
+  o.uv = ps[vi] * 0.5 + 0.5;
+  return o;
+}
+
+fn sdfAt(p: vec2f) -> f32 {
+  let fx = clamp(p.x / R.fh - 0.5, 0.0, f32(R.fnx) - 1.001);
+  let fy = clamp(p.y / R.fh - 0.5, 0.0, f32(R.fny) - 1.001);
+  let i = u32(fx); let j = u32(fy);
+  let tx = fx - f32(i); let ty = fy - f32(j);
+  let c = i * R.fny + j;
+  return mix(mix(sdf[c], sdf[c + 1u], ty), mix(sdf[c + R.fny], sdf[c + R.fny + 1u], ty), tx);
+}
+fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233))) * 43758.5453); }
+
+@fragment fn fsComposite(i: QO) -> @location(0) vec4f {
+  let tuv = vec2f(i.uv.x, 1.0 - i.uv.y);
+  let f = textureSampleLevel(fieldTex, samp, tuv, 0.0);
+  let d = f.a * R.norm;
+  let fw = fwidth(d);
+  var water = vec4f(0.0);
+  if (R.showWater == 1u && d > 0.05) {
+    let T = 0.33;
+    let a = clamp((d - T) / max(fw, 1e-4) + 0.5, 0.0, 1.0);
+    let col = f.rgb / max(f.a, 1e-5);
+    let e = R.texel * 1.5;
+    let dl = textureSampleLevel(fieldTex, samp, tuv - vec2f(e.x, 0.0), 0.0).a;
+    let dr = textureSampleLevel(fieldTex, samp, tuv + vec2f(e.x, 0.0), 0.0).a;
+    let dt = textureSampleLevel(fieldTex, samp, tuv - vec2f(0.0, e.y), 0.0).a;
+    let db = textureSampleLevel(fieldTex, samp, tuv + vec2f(0.0, e.y), 0.0).a;
+    let nearSurface = 1.0 - smoothstep(T, T + 0.55, d);
+    let n = normalize(vec3f(-vec2f(dr - dl, dt - db) * R.norm * R.bump * nearSurface, 1.0));
+    let thick = smoothstep(0.45, 1.1, d);
+    let base = col * mix(1.04, 0.74, thick);
+    let edge = 1.0 - smoothstep(T, T + 0.2, d);
+    let L = normalize(vec3f(-0.45, 0.75, 0.55));
+    let diff = clamp(dot(n, L), 0.0, 1.0);
+    let spec = pow(clamp(dot(n, normalize(L + vec3f(0.0, 0.0, 1.0))), 0.0, 1.0), 48.0);
+    let c = base * (0.70 + 0.40 * diff) + edge * 0.42 * (vec3f(1.0) - base) + spec * 0.5;
+    let alpha = a * mix(0.80, 0.94, thick);
+    water = vec4f(min(c, vec3f(1.0)) * alpha, alpha);
+  }
+  let wp = i.uv * R.world;
+  let sd = sdfAt(wp);
+  var rock = vec4f(0.0);
+  let ra = clamp(0.5 - sd / R.pxWorld, 0.0, 1.0);
+  if (ra > 0.0) {
+    let e = R.fh * 0.5;
+    var g = vec2f(sdfAt(wp + vec2f(e, 0.0)) - sdfAt(wp - vec2f(e, 0.0)), sdfAt(wp + vec2f(0.0, e)) - sdfAt(wp - vec2f(0.0, e)));
+    g = g / max(length(g), 1e-6);
+    let bevel = 1.0 - smoothstep(0.0, 0.03, -sd);
+    let light = dot(g, vec2f(-0.5, 0.866)) * bevel;
+    let grain = hash(floor(wp * 220.0)) * 0.6 + hash(floor(wp * 45.0)) * 0.4;
+    let b = 0.42 + (grain - 0.5) * 0.07 + light * 0.24 - (1.0 - bevel) * 0.035;
+    rock = vec4f(vec3f(b, b * 1.03, b * 1.015) * ra, ra);
+  }
+  return rock + water * (1.0 - rock.a);
+}
+`;
+
+let gpuDevicePromise = null;
+let gpuContext = null;
+function getGPUDevice() {
+  if (!gpuDevicePromise) {
+    gpuDevicePromise = (async () => {
+      if (!navigator.gpu) throw new Error('WebGPU is not available');
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      if (!adapter) throw new Error('No WebGPU adapter');
+      const device = await adapter.requestDevice();
+      device.lost.then((info) => {
+        gpuDevicePromise = null; gpuContext = null;
+        if (info.reason !== 'destroyed' && engine && engine.kind === 'gpu') {
+          engineNote = 'GPU 連線中斷，已改用 CPU 運算。';
+          rebuildEngine('cpu');
+        }
+      });
+      return device;
+    })();
+    gpuDevicePromise.catch(() => { gpuDevicePromise = null; });
+  }
+  return gpuDevicePromise;
+}
+
+const gpuPipeCache = new WeakMap();
+function getGPUPipelines(device) {
+  let p = gpuPipeCache.get(device);
+  if (p) return p;
+  const C = GPUShaderStage.COMPUTE, V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT;
+  const simModule = device.createShaderModule({ code: SIM_WGSL });
+  const simBGL = device.createBindGroupLayout({
+    entries: [{ binding: 0, visibility: C, buffer: { type: 'uniform' } },
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map((b) => ({ binding: b, visibility: C, buffer: { type: 'storage' } }))],
+  });
+  const simLayout = device.createPipelineLayout({ bindGroupLayouts: [simBGL] });
+  const cp = (entryPoint, constants) => device.createComputePipeline({ layout: simLayout, compute: { module: simModule, entryPoint, constants } });
+
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  const rmod = device.createShaderModule({ code: RENDER_WGSL });
+  const partBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: V | F, buffer: { type: 'uniform' } },
+      { binding: 1, visibility: V, buffer: { type: 'read-only-storage' } },
+      { binding: 2, visibility: V, buffer: { type: 'read-only-storage' } },
+    ],
+  });
+  const compBGL = device.createBindGroupLayout({
+    entries: [
+      { binding: 0, visibility: F, buffer: { type: 'uniform' } },
+      { binding: 3, visibility: F, buffer: { type: 'read-only-storage' } },
+      { binding: 4, visibility: F, texture: { sampleType: 'float' } },
+      { binding: 5, visibility: F, sampler: { type: 'filtering' } },
+    ],
+  });
+  const premult = { color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } };
+  const additive = { color: { srcFactor: 'one', dstFactor: 'one', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'one', operation: 'add' } };
+  const rp = (bgl, vs, fs, fmt, blend) => device.createRenderPipeline({
+    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+    vertex: { module: rmod, entryPoint: vs },
+    fragment: { module: rmod, entryPoint: fs, targets: [{ format: fmt, blend }] },
+    primitive: { topology: 'triangle-list' },
+  });
+
+  p = {
+    simBGL, format, partBGL, compBGL,
+    spawn: cp('spawnParticles'), integrate: cp('integrate'), clearBins: cp('clearBins'), binInsert: cp('binInsert'),
+    separate: cp('separate'), applySep: cp('applySep'), collide: cp('collide'), clearGrid: cp('clearGrid'),
+    p2g: cp('p2g'), gridNormalize: cp('gridNormalize'), pressure0: cp('pressure', { PARITY: 0 }), pressure1: cp('pressure', { PARITY: 1 }),
+    g2p: cp('g2p'), drain: cp('drainPass'), scanBlocks: cp('scanBlocks'), scanSums: cp('scanSums'), scatter: cp('scatter'), finalize: cp('finalize'),
+    splat: rp(partBGL, 'vsParticle', 'fsSplat', 'rgba16float', additive),
+    dots: rp(partBGL, 'vsParticle', 'fsDots', format, premult),
+    composite: rp(compBGL, 'vsQuad', 'fsComposite', format, premult),
+    sampler: device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' }),
+  };
+  gpuPipeCache.set(device, p);
+  return p;
+}
+
+class GpuEngine {
+  static async create(key) {
+    const device = await getGPUDevice();
+    device.pushErrorScope('validation');
+    const e = new GpuEngine(device, key);
+    const err = await device.popErrorScope();
+    if (err) { e.destroy(); throw new Error(err.message); }
+    return e;
+  }
+
+  constructor(device, key) {
+    const q = QUALITY.gpu[key];
+    this.kind = 'gpu'; this.key = key; this.q = q; this.device = device;
+    this.ny = q.ny; this.nx = Math.round(q.ny * ASPECT); this.h = TANK_H / this.ny; this.width = this.nx * this.h;
+    this.maxP = q.cap;
+    this.obs = new ObstacleField(this.nx, this.ny, this.h);
+    this.r = 0.3 * this.h;
+    this.restDensity = REST_DENSITY;
+    this.particleArea = this.h * this.h / REST_DENSITY;
+    this.substeps = clamp(Math.ceil(8 / (3 * this.h * 60)), 1, 4);   // keep up with ~8 m/s at 3 cells per substep
+    this.pInv = 1 / (2.2 * this.r);
+    this.pnx = Math.floor(this.width * this.pInv) + 1;
+    this.pny = Math.floor(TANK_H * this.pInv) + 1;
+    this.n = this.nx * this.ny;
+    this.nb = Math.ceil(this.maxP / 256);
+    this.numP = 0; this.drainedTotal = 0;
+    this.pending = 0; this.spawnData = new Float32Array(this.maxP * 8);
+    this.lastInput = { gravity: -9.81, flipRatio: 0.9, drains: [], brush: null };
+    this.readPending = false;
+    this.pipes = getGPUPipelines(device);
+
+    const U = GPUBufferUsage;
+    this.buffers = [];
+    const buf = (size, usage) => {
+      const b = device.createBuffer({ size: Math.max(16, Math.ceil(size / 4) * 4), usage });
+      this.buffers.push(b);
+      return b;
+    };
+    this.params = buf(384, U.UNIFORM | U.COPY_DST);
+    this.parts = buf(this.maxP * 32, U.STORAGE | U.COPY_DST | U.COPY_SRC);
+    this.scratch = buf(this.maxP * 32, U.STORAGE | U.COPY_SRC);
+    this.ctr = buf((4 + this.maxP + this.nb) * 4, U.STORAGE | U.COPY_DST | U.COPY_SRC);
+    this.spawnBuf = buf(this.maxP * 32, U.STORAGE | U.COPY_DST);
+    this.bins = buf(this.pnx * this.pny * 9 * 4, U.STORAGE);
+    this.gi = buf(6 * this.n * 4, U.STORAGE);
+    this.gf = buf(7 * this.n * 4, U.STORAGE | U.COPY_DST);
+    this.sdfBuf = buf(this.obs.fnx * this.obs.fny * 4, U.STORAGE | U.COPY_DST);
+    this.readBuf = buf(16, U.MAP_READ | U.COPY_DST);
+    this.rparams = buf(64, U.UNIFORM | U.COPY_DST);
+
+    this.paramData = new ArrayBuffer(384);
+    this.pu = new Uint32Array(this.paramData); this.pf = new Float32Array(this.paramData);
+    this.rpData = new ArrayBuffer(64);
+    this.ru = new Uint32Array(this.rpData); this.rf = new Float32Array(this.rpData);
+
+    const entries = [this.params, this.parts, this.scratch, this.ctr, this.spawnBuf, this.bins, this.gi, this.gf, this.sdfBuf]
+      .map((b, i) => ({ binding: i, resource: { buffer: b } }));
+    this.simBG = device.createBindGroup({ layout: this.pipes.simBGL, entries });
+    this.partBG = device.createBindGroup({
+      layout: this.pipes.partBGL,
+      entries: [{ binding: 0, resource: { buffer: this.rparams } }, { binding: 1, resource: { buffer: this.parts } }, { binding: 2, resource: { buffer: this.ctr } }],
+    });
+    this.fieldTex = null; this.fw = 0; this.fh = 0; this.compBG = null;
+
+    if (!gpuContext) {
+      gpuContext = gpuCanvas.getContext('webgpu');
+      gpuContext.configure({ device, format: this.pipes.format, alphaMode: 'premultiplied' });
+    }
+    this.obstaclesChanged();
+  }
+
+  spawn(x, y, vx, vy, r, g, b) {
+    if (this.numP + this.pending >= this.maxP) return false;
+    const o = this.pending++ * 8, d = this.spawnData;
+    d[o] = x; d[o + 1] = y; d[o + 2] = vx; d[o + 3] = vy; d[o + 4] = r; d[o + 5] = g; d[o + 6] = b; d[o + 7] = 1;
+    return true;
+  }
+
+  clearWater() {
+    this.pending = 0; this.numP = 0;
+    this.device.queue.writeBuffer(this.ctr, 0, new Uint32Array([0]));
+  }
+
+  obstaclesChanged() {
+    const q = this.device.queue;
+    q.writeBuffer(this.sdfBuf, 0, this.obs.sdf);
+    q.writeBuffer(this.gf, 5 * this.n * 4, this.obs.s);
+  }
+
+  writeParams(dt, input, numSpawn) {
+    const pu = this.pu, pf = this.pf, drains = input.drains.slice(0, MAX_GPU_DRAINS);
+    pu[0] = this.nx; pu[1] = this.ny; pu[2] = this.pnx; pu[3] = this.pny;
+    pu[4] = this.obs.fnx; pu[5] = this.obs.fny; pu[6] = this.maxP; pu[7] = drains.length;
+    pf[8] = this.h; pf[9] = 1 / this.h; pf[10] = this.obs.fh; pf[11] = this.r;
+    const sdt = dt / this.substeps;
+    pf[12] = sdt; pf[13] = input.gravity; pf[14] = input.flipRatio; pf[15] = REST_DENSITY;
+    pf[16] = this.width; pf[17] = TANK_H; pf[18] = this.pInv; pf[19] = 1.9;
+    const b = input.brush;
+    pu[20] = b ? (b.mode === 'stir' ? 1 : 2) : 0; pu[21] = numSpawn; pf[22] = dt; pf[23] = 3 * this.h / sdt;
+    pf[24] = b ? b.x : 0; pf[25] = b ? b.y : 0; pf[26] = b ? b.R : 0; pf[27] = 0;
+    pf[28] = b ? b.vx : 0; pf[29] = b ? b.vy : 0; pf[30] = 0; pf[31] = 0;
+    drains.forEach((d, k) => { pf[32 + 4 * k] = d.x; pf[33 + 4 * k] = d.y; pf[34 + 4 * k] = d.r; pf[35 + 4 * k] = d.pull; });
+    this.device.queue.writeBuffer(this.params, 0, this.paramData);
+  }
+
+  // Upload queued particles and append them on the GPU.
+  encodeSpawn(pass, numSpawn) {
+    this.device.queue.writeBuffer(this.spawnBuf, 0, this.spawnData, 0, numSpawn * 8);
+    pass.setPipeline(this.pipes.spawn);
+    pass.dispatchWorkgroups(Math.ceil(numSpawn / 64));
+    this.numP = Math.min(this.maxP, this.numP + numSpawn);
+    this.pending = 0;
+  }
+
+  step(dt, input) {
+    this.lastInput = input;
+    const p = this.pipes, numSpawn = this.pending;
+    this.writeParams(dt, input, numSpawn);
+    const enc = this.device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setBindGroup(0, this.simBG);
+    if (numSpawn > 0) this.encodeSpawn(pass, numSpawn);
+    const PW = Math.ceil(this.maxP / 64), GW = Math.ceil(this.n / 64);
+    const gx = Math.ceil(this.nx / 8), gy = Math.ceil(this.ny / 8);
+    const run = (pipe, x, y = 1) => { pass.setPipeline(pipe); pass.dispatchWorkgroups(x, y); };
+    for (let s = 0; s < this.substeps; s++) {
+      run(p.integrate, PW);
+      run(p.clearBins, Math.ceil(this.pnx * this.pny / 64));
+      run(p.binInsert, PW);
+      for (let k = 0; k < 2; k++) { run(p.separate, PW); run(p.applySep, PW); }
+      run(p.collide, PW);
+      run(p.clearGrid, Math.ceil(6 * this.n / 64));
+      run(p.p2g, PW);
+      run(p.gridNormalize, GW);
+      for (let it = 0; it < PRESSURE_ITERS_GPU; it++) { run(p.pressure0, gx, gy); run(p.pressure1, gx, gy); }
+      run(p.g2p, PW);
+    }
+    run(p.drain, PW);
+    run(p.scanBlocks, this.nb);
+    run(p.scanSums, 1);
+    run(p.scatter, PW);
+    run(p.finalize, 1);
+    pass.end();
+    enc.copyBufferToBuffer(this.scratch, 0, this.parts, 0, this.maxP * 32);
+    this.submitWithReadback(enc);
+  }
+
+  submitWithReadback(enc) {
+    const doRead = !this.readPending;
+    if (doRead) enc.copyBufferToBuffer(this.ctr, 0, this.readBuf, 0, 16);
+    this.device.queue.submit([enc.finish()]);
+    if (!doRead) return;
+    this.readPending = true;
+    const rb = this.readBuf;
+    rb.mapAsync(GPUMapMode.READ).then(() => {
+      const a = new Uint32Array(rb.getMappedRange());
+      this.numP = a[0]; this.drainedTotal = a[1];
+      rb.unmap();
+      this.readPending = false;
+    }).catch(() => { this.readPending = false; });
+  }
+
+  ensureField(w, h) {
+    if (w === this.fw && h === this.fh) return;
+    if (this.fieldTex) this.fieldTex.destroy();
+    this.fieldTex = this.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    this.fieldView = this.fieldTex.createView();
+    this.compBG = this.device.createBindGroup({
+      layout: this.pipes.compBGL,
+      entries: [
+        { binding: 0, resource: { buffer: this.rparams } },
+        { binding: 3, resource: { buffer: this.sdfBuf } },
+        { binding: 4, resource: this.fieldView },
+        { binding: 5, resource: this.pipes.sampler },
+      ],
+    });
+    this.fw = w; this.fh = h;
+  }
+
+  render() {
+    const device = this.device, p = this.pipes;
+    if (!gpuContext || view.tw < 1 || view.th < 1) return;
+    const enc = device.createCommandEncoder();
+    if (this.pending > 0) {
+      // While paused, queued water (scene loads, pouring) still has to reach the GPU.
+      this.writeParams(DT, this.lastInput, this.pending);
+      const pass = enc.beginComputePass();
+      pass.setBindGroup(0, this.simBG);
+      this.encodeSpawn(pass, this.pending);
+      pass.end();
+    }
+    const surface = viewMode === 'surface';
+    const w = Math.max(16, Math.round(view.tw / view.dpr * this.q.field)), h = Math.max(16, Math.round(view.th / view.dpr * this.q.field));
+    this.ensureField(w, h);
+    const kr = surface ? KERNEL * this.r : 0.95 * this.r;
+    const rf = this.rf, ru = this.ru;
+    rf[0] = this.width; rf[1] = TANK_H; rf[2] = kr; ru[3] = colorMode === 'speed' ? 1 : 0;
+    rf[4] = 1 / (REST_DENSITY / (this.h * this.h) * Math.PI * kr * kr / 4); rf[5] = kr * w / this.width * 0.5;
+    ru[6] = surface ? 1 : 0; rf[7] = 1 / view.s;
+    rf[8] = 1 / w; rf[9] = 1 / h; rf[10] = this.obs.fh; ru[11] = this.obs.fnx; ru[12] = this.obs.fny;
+    device.queue.writeBuffer(this.rparams, 0, this.rpData);
+
+    if (surface) {
+      const fp = enc.beginRenderPass({ colorAttachments: [{ view: this.fieldView, loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: 'store' }] });
+      fp.setPipeline(p.splat); fp.setBindGroup(0, this.partBG); fp.draw(6, this.maxP);
+      fp.end();
+    }
+    const out = enc.beginRenderPass({ colorAttachments: [{ view: gpuContext.getCurrentTexture().createView(), loadOp: 'clear', clearValue: { r: 0, g: 0, b: 0, a: 0 }, storeOp: 'store' }] });
+    out.setViewport(view.tx, view.ty, view.tw, view.th, 0, 1);
+    if (!surface) { out.setPipeline(p.dots); out.setBindGroup(0, this.partBG); out.draw(6, this.maxP); }
+    out.setPipeline(p.composite); out.setBindGroup(0, this.compBG); out.draw(3);
+    out.end();
+    this.submitWithReadback(enc);
+  }
+
+  relax() {}
+
+  async exportParticles() {
+    const device = this.device, bytes = this.maxP * 32;
+    const st = device.createBuffer({ size: 16 + bytes, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(this.ctr, 0, st, 0, 16);
+    enc.copyBufferToBuffer(this.parts, 0, st, 16, bytes);
+    device.queue.submit([enc.finish()]);
+    await st.mapAsync(GPUMapMode.READ);
+    const count = Math.min(new Uint32Array(st.getMappedRange(0, 16))[0], this.maxP);
+    const f = new Float32Array(st.getMappedRange(16, bytes));
+    const pos = new Float32Array(2 * count), vel = new Float32Array(2 * count), col = new Float32Array(3 * count);
+    let n = 0;
+    for (let i = 0; i < count; i++) {
+      const o = i * 8;
+      if (f[o + 7] < 0.5) continue;
+      pos[2 * n] = f[o]; pos[2 * n + 1] = f[o + 1]; vel[2 * n] = f[o + 2]; vel[2 * n + 1] = f[o + 3];
+      col[3 * n] = f[o + 4]; col[3 * n + 1] = f[o + 5]; col[3 * n + 2] = f[o + 6];
+      n++;
+    }
+    st.unmap(); st.destroy();
+    return { n, r: this.r, pos, vel, col };
+  }
+
+  destroy() {
+    for (const b of this.buffers) b.destroy();
+    if (this.fieldTex) this.fieldTex.destroy();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Active engine and the globals the app code reads from it.
+// ---------------------------------------------------------------------------
+let engine = null;
+let CELL = 0.04, TANK_W = 4;
+let engineNote = '';
+let switching = false;
+
+function importParticles(e, data, oldArea) {
+  const ratio = oldArea / e.particleArea, whole = Math.floor(ratio), frac = ratio - whole;
+  for (let p = 0; p < data.n; p++) {
+    const n = whole + (Math.random() < frac ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * data.r * 1.2;
+      const x = data.pos[2 * p] + Math.cos(a) * rr, y = data.pos[2 * p + 1] + Math.sin(a) * rr;
+      if (e.obs.sampleSDF(x, y) < 0) continue;
+      if (!e.spawn(x, y, data.vel[2 * p], data.vel[2 * p + 1], data.col[3 * p], data.col[3 * p + 1], data.col[3 * p + 2])) { e.relax(); return; }
+    }
+  }
+  e.relax();
+}
+
+// Build a new engine (or the same kind at another quality), carrying over obstacles, devices and water.
+async function rebuildEngine(kind) {
+  if (switching) return;
+  switching = true;
+  setEngineBusy(true);
+  const old = engine;
+  let data = null;
+  if (old) { try { data = await old.exportParticles(); } catch (err) { data = null; } }
+  let ne = null;
+  if (kind === 'gpu') {
+    try { ne = await GpuEngine.create(prefs.quality.gpu); }
+    catch (err) { console.warn('WebGPU engine unavailable:', err); engineNote = '這個瀏覽器無法啟動 WebGPU，已改用 CPU 運算。'; }
+  }
+  if (!ne) ne = new CpuEngine(prefs.quality.cpu);
+  if (old) ne.obs.resampleFrom(old.obs);
+  engine = ne;
+  CELL = ne.h; TANK_W = ne.width;
+  ne.obstaclesChanged();
+  solidsDirty = false;
+  if (old) {
+    if (data) importParticles(ne, data, old.particleArea);
+    for (const s of sources) { s.x = clamp(s.x, CELL * 1.5, TANK_W - CELL * 1.5); s.acc = 0; }
+    for (const d of drains) d.x = clamp(d.x, CELL * 1.5, TANK_W - CELL * 1.5);
+    old.destroy();
+  }
+  totalsAt = { t: simTime, in: totalIn, out: ne.drainedTotal };
+  gpuCanvas.hidden = ne.kind !== 'gpu';
+  glCanvas.hidden = ne.kind !== 'cpu';
+  resize();
+  syncEngineUI();
+  setEngineBusy(false);
+  switching = false;
+}
+
+// ---------------------------------------------------------------------------
+// Devices
+// ---------------------------------------------------------------------------
+const PALETTE = [
+  { name: '藍', rgb: [0.20, 0.50, 0.93] },
+  { name: '青', rgb: [0.10, 0.72, 0.72] },
+  { name: '玫瑰', rgb: [0.91, 0.30, 0.55] },
+  { name: '琥珀', rgb: [0.96, 0.64, 0.18] },
+  { name: '草綠', rgb: [0.42, 0.78, 0.30] },
+];
+const NOZZLE_LEN = 0.2;
+let sources = [], drains = [];
+let selected = null;           // { kind: 'source'|'drain', obj }
+let nextId = 1;
+let totalIn = 0, simTime = 0;
+
+function makeSource(x, y, angleDeg, opts = {}) {
+  return { id: nextId++, x, y, angle: angleDeg * Math.PI / 180, speed: opts.speed ?? 2.5, width: opts.width ?? 0.14, color: opts.color ?? 0, on: true, acc: 0, row: 0 };
+}
+function makeDrain(x, y, opts = {}) {
+  return { id: nextId++, x, y, r: opts.r ?? 0.14, pull: opts.pull ?? 1 };
+}
+const sourceFlow = (s) => s.width * s.speed * DEPTH * 1000;   // L/s
+
+function emit(dt) {
+  // Rows of particles laid across the nozzle at the packing spacing, so the jet leaves as a clean sheet.
+  const r = engine.r, spacing = 2 * r, rowGap = Math.sqrt(3) * r, obs = engine.obs;
+  for (const s of sources) {
+    if (!s.on) continue;
+    const dx = Math.cos(s.angle), dy = Math.sin(s.angle), nx = -dy, ny = dx;
+    const mx = s.x + dx * NOZZLE_LEN * 0.5, my = s.y + dy * NOZZLE_LEN * 0.5;
+    const count = Math.max(1, Math.round(s.width / spacing));
+    const [cr, cg, cb] = PALETTE[s.color].rgb;
+    s.acc += s.speed * dt;
+    while (s.acc >= rowGap) {
+      s.acc -= rowGap;
+      const shift = (s.row++ & 1) ? 0.25 : -0.25;
+      let full = false;
+      for (let k = 0; k < count; k++) {
+        const t = ((k + 0.5 + shift) / count - 0.5) * s.width + (Math.random() - 0.5) * 0.1 * r;
+        const px = mx + nx * t + dx * s.acc, py = my + ny * t + dy * s.acc;
+        if (obs.sampleSDF(px, py) < r) continue;
+        if (!engine.spawn(px, py, dx * s.speed, dy * s.speed, cr, cg, cb)) { full = true; break; }
+        totalIn++;
+      }
+      if (full) { s.acc = 0; break; }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Painting helpers (world coordinates, metres)
+// ---------------------------------------------------------------------------
+let solidsDirty = false;   // obstacle field changed since the engine last saw it
+function paintCircle(x, y, R, val) {
+  engine.obs.stampCircle(x, y, R, val === 1);
+  solidsDirty = true;
+}
+function paintSegment(x0, y0, x1, y1, R, val) {
+  const len = Math.hypot(x1 - x0, y1 - y0), steps = Math.max(1, Math.ceil(len / (R * 0.3)));
+  for (let k = 0; k <= steps; k++) { const t = k / steps; paintCircle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, R, val); }
+}
+function paintRect(x0, y0, x1, y1) {
+  engine.obs.stampBox(x0, y0, x1, y1);
+  solidsDirty = true;
+}
+function fillWater(x0, y0, x1, y1, rgb) {
+  const r = engine.r, dx = 2 * r, dy = Math.sqrt(3) * r, obs = engine.obs;
+  let row = 0;
+  for (let y = y0 + r; y < y1; y += dy, row++) {
+    for (let x = x0 + r + (row % 2 ? r : 0); x < x1; x += dx) {
+      if (obs.sampleSDF(x, y) < r) continue;
+      if (!engine.spawn(x, y, 0, 0, rgb[0], rgb[1], rgb[2])) return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scenes (positions as fractions of the tank so they fit any aspect)
+// ---------------------------------------------------------------------------
+const SCENES = {
+  cascade() {
+    const W = TANK_W, H = TANK_H;
+    for (let k = 0; k < 4; k++) {
+      const x0 = W * (0.04 + k * 0.205), x1 = x0 + W * 0.19, y = H * (0.74 - k * 0.165);
+      paintSegment(x0, y + 0.02, x1, y - 0.03, 0.045, 1);
+      paintSegment(x1, y - 0.03, x1, y + 0.11, 0.04, 1);
+    }
+    paintCircle(W * 0.5, 0.12, 0.2, 1);
+    sources.push(makeSource(W * 0.07, H * 0.9, -15, { speed: 2.2, width: 0.14, color: 0 }));
+    drains.push(makeDrain(W * 0.93, 0.18, { r: 0.13, pull: 1 }));
+    fillWater(CELL, CELL, W - CELL, H * 0.1, PALETTE[1].rgb);
+  },
+  funnel() {
+    const W = TANK_W, H = TANK_H;
+    paintSegment(W * 0.14, H * 0.66, W * 0.45, H * 0.45, 0.045, 1);
+    paintSegment(W * 0.86, H * 0.66, W * 0.55, H * 0.45, 0.045, 1);
+    for (let row = 0; row < 3; row++) {
+      const cols = 6 - (row % 2), y = H * (0.33 - row * 0.085);
+      for (let c = 0; c < cols; c++) paintCircle(W * 0.5 + (c - (cols - 1) / 2) * W * 0.085, y, 0.055, 1);
+    }
+    sources.push(makeSource(W * 0.06, H * 0.86, -8, { speed: 2.4, width: 0.12, color: 0 }));
+    sources.push(makeSource(W * 0.94, H * 0.86, 188, { speed: 2.4, width: 0.12, color: 2 }));
+    drains.push(makeDrain(W * 0.5, 0.16, { r: 0.15, pull: 1.2 }));
+    fillWater(CELL, CELL, W - CELL, H * 0.06, PALETTE[3].rgb);
+  },
+  dam() {
+    const W = TANK_W, H = TANK_H;
+    paintCircle(W * 0.58, 0.28, 0.22, 1);
+    paintRect(W * 0.8, CELL, W * 0.84, H * 0.22);
+    fillWater(CELL, CELL, W * 0.36, H * 0.72, PALETTE[0].rgb);
+  },
+  empty() {
+    const W = TANK_W, H = TANK_H;
+    sources.push(makeSource(W * 0.12, H * 0.8, -30, { speed: 2.6, width: 0.14, color: 0 }));
+    fillWater(CELL, CELL, W - CELL, H * 0.12, PALETTE[0].rgb);
+  },
+};
+
+function loadScene(name) {
+  if (!engine || switching) return;
+  engine.clearWater();
+  sources = []; drains = []; select(null);
+  engine.obs.clear();
+  SCENES[name]();
+  engine.obstaclesChanged();
+  solidsDirty = false;
+}
+
+// ---------------------------------------------------------------------------
+// View: stacked canvases — background, WebGL or WebGPU (water + obstacles), 2D overlay (devices).
+// ---------------------------------------------------------------------------
+const view = { dpr: 1, cw: 1, ch: 1, tx: 0, ty: 0, tw: 1, th: 1, s: 1 };
+const sx = (x) => view.tx + x * view.s;
+const sy = (y) => view.ty + (TANK_H - y) * view.s;
+
+function resize() {
+  if (!engine) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = wrap.clientWidth, h = wrap.clientHeight;
+  view.dpr = dpr; view.cw = Math.max(1, Math.round(w * dpr)); view.ch = Math.max(1, Math.round(h * dpr));
+  for (const c of [bgCanvas, glCanvas, gpuCanvas, canvas]) { c.width = view.cw; c.height = view.ch; }
+  const pad = 10 * dpr;
+  const s = Math.min((view.cw - 2 * pad) / TANK_W, (view.ch - 2 * pad) / TANK_H);
+  view.tw = Math.max(1, Math.round(TANK_W * s)); view.th = Math.max(1, Math.round(TANK_H * s));
+  view.s = view.th / TANK_H;
+  view.tx = Math.round((view.cw - view.tw) / 2); view.ty = Math.round((view.ch - view.th) / 2);
+  drawBackground();
+}
+
+function drawBackground() {
+  const g = bgCanvas.getContext('2d');
+  g.clearRect(0, 0, view.cw, view.ch);
+  const x0 = view.tx, y0 = view.ty, w = view.tw, h = view.th;
+  const grad = g.createLinearGradient(0, y0, 0, y0 + h);
+  grad.addColorStop(0, '#16262d'); grad.addColorStop(1, '#0a1419');
+  g.fillStyle = grad; g.fillRect(x0, y0, w, h);
+  // 10 cm grid, stronger every 50 cm
+  const line = Math.max(1, Math.round(view.dpr * 0.6));
+  for (let k = 0; k * 0.1 <= TANK_W + 1e-6; k++) {
+    g.fillStyle = k % 5 === 0 ? 'rgba(170,210,225,0.075)' : 'rgba(170,210,225,0.03)';
+    g.fillRect(Math.round(sx(k * 0.1)), y0, line, h);
+  }
+  for (let k = 0; k * 0.1 <= TANK_H + 1e-6; k++) {
+    g.fillStyle = k % 5 === 0 ? 'rgba(170,210,225,0.075)' : 'rgba(170,210,225,0.03)';
+    g.fillRect(x0, Math.round(sy(k * 0.1)), w, line);
+  }
+  // depth ruler on the inside of the left wall
+  const fs = Math.round(10 * view.dpr);
+  g.font = `500 ${fs}px "IBM Plex Mono", ui-monospace, monospace`;
+  g.textBaseline = 'middle';
+  for (let k = 1; k * 0.1 < TANK_H - CELL; k++) {
+    const y = sy(k * 0.1), xl = sx(CELL);
+    const major = k % 5 === 0;
+    g.fillStyle = major ? 'rgba(210,230,236,0.55)' : 'rgba(210,230,236,0.3)';
+    g.fillRect(xl, Math.round(y), (major ? 12 : 6) * view.dpr, Math.max(1, view.dpr));
+    if (major) g.fillText(`${k * 10}`, xl + 15 * view.dpr, y);
+  }
+  g.fillStyle = 'rgba(210,230,236,0.45)';
+  g.fillText('cm', sx(CELL) + 15 * view.dpr, sy(TANK_H - CELL) + 10 * view.dpr);
 }
 
 // ---------------------------------------------------------------------------
@@ -1393,6 +2335,7 @@ function hitDevice(x, y, kinds) {
 }
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (!engine || switching) return;
   const [x, y] = toWorld(e);
   canvas.setPointerCapture(e.pointerId);
   pointer.down = true; pointer.x = pointer.lx = x; pointer.y = pointer.ly = y; pointer.vx = pointer.vy = 0; pointer.t = performance.now();
@@ -1420,6 +2363,7 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 
 canvas.addEventListener('pointermove', (e) => {
+  if (!engine) return;
   const [x, y] = toWorld(e);
   const now = performance.now(), dt = Math.max(1, now - pointer.t) / 1000;
   if (pointer.down) {
@@ -1429,7 +2373,7 @@ canvas.addEventListener('pointermove', (e) => {
   }
   pointer.lx = pointer.x; pointer.ly = pointer.y;
   pointer.x = x; pointer.y = y; pointer.t = now; pointer.over = true;
-  if (!pointer.down) return;
+  if (!pointer.down || switching) return;
   if (drag) {
     const o = drag.obj;
     if (drag.mode === 'move') {
@@ -1451,33 +2395,20 @@ canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', () => { pointer.over = false; });
 
 const pourColor = () => (selected && selected.kind === 'source' ? selected.obj.color : 0);
-function applyBrushTools() {
-  if (!pointer.down || drag) return;
-  const { pos, vel } = sim, R = brushR, R2 = R * R, x = pointer.x, y = pointer.y;
-  if (tool === 'pour') {
-    const count = Math.ceil(R2 * Math.PI / PARTICLE_AREA * 0.06);
-    const [cr, cg, cb] = PALETTE[pourColor()].rgb;
-    for (let k = 0; k < count; k++) {
-      const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R;
-      const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
-      if (!inside(px, py) || sim.sampleSDF(px, py) < sim.r) continue;
-      if (!sim.addParticle(px, py, pointer.vx * 0.5, pointer.vy * 0.5 - 0.5, cr, cg, cb)) break;
-    }
-  } else if (tool === 'stir') {
-    for (let i = 0; i < sim.numP; i++) {
-      const dx = pos[2 * i] - x, dy = pos[2 * i + 1] - y, q = dx * dx + dy * dy;
-      if (q > R2) continue;
-      const w = (1 - Math.sqrt(q) / R) * 0.35;
-      vel[2 * i] += (pointer.vx - vel[2 * i]) * w;
-      vel[2 * i + 1] += (pointer.vy - vel[2 * i + 1]) * w;
-    }
-    pointer.vx *= 0.9; pointer.vy *= 0.9;
-  } else if (tool === 'sponge') {
-    for (let i = sim.numP - 1; i >= 0; i--) {
-      const dx = pos[2 * i] - x, dy = pos[2 * i + 1] - y;
-      if (dx * dx + dy * dy < R2) sim.removeParticle(i);
-    }
+function pour() {
+  const R = brushR, x = pointer.x, y = pointer.y, obs = engine.obs;
+  const count = Math.ceil(R * R * Math.PI / engine.particleArea * 0.06);
+  const [cr, cg, cb] = PALETTE[pourColor()].rgb;
+  for (let k = 0; k < count; k++) {
+    const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R;
+    const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
+    if (!inside(px, py) || obs.sampleSDF(px, py) < engine.r) continue;
+    if (!engine.spawn(px, py, pointer.vx * 0.5, pointer.vy * 0.5 - 0.5, cr, cg, cb)) break;
   }
+}
+function brushInput() {
+  if (!pointer.down || drag || (tool !== 'stir' && tool !== 'sponge')) return null;
+  return { mode: tool, x: pointer.x, y: pointer.y, R: brushR, vx: pointer.vx, vy: pointer.vy };
 }
 
 // ---------------------------------------------------------------------------
@@ -1559,26 +2490,56 @@ $('srcDel').addEventListener('click', deleteSelected);
 $('drnDel').addEventListener('click', deleteSelected);
 
 const gravIn = $('grav'), flipIn = $('flip');
-gravIn.addEventListener('input', () => { sim.gravity = -9.81 * gravIn.value; $('gravOut').textContent = `${(+gravIn.value).toFixed(2)} g`; });
-flipIn.addEventListener('input', () => { sim.flipRatio = +flipIn.value; $('flipOut').textContent = `${Math.round(flipIn.value * 100)}%`; });
+gravIn.addEventListener('input', () => { $('gravOut').textContent = `${(+gravIn.value).toFixed(2)} g`; });
+flipIn.addEventListener('input', () => { $('flipOut').textContent = `${Math.round(flipIn.value * 100)}%`; });
 
 function bindSeg(id, set) {
   const btns = [...$(id).querySelectorAll('button')];
   for (const b of btns) b.addEventListener('click', () => {
+    if (b.disabled) return;
     for (const o of btns) o.setAttribute('aria-pressed', o === b ? 'true' : 'false');
     set(b.dataset.v);
   });
 }
 bindSeg('segView', (v) => { viewMode = v; });
 bindSeg('segColor', (v) => { colorMode = v; });
-bindSeg('segQuality', (v) => setQuality(v));
-function syncQualityUI() {
-  for (const b of $('segQuality').querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.v === qualityKey ? 'true' : 'false');
+bindSeg('segQuality', (v) => {
+  if (!engine || switching || v === engine.key) return;
+  prefs.quality[engine.kind] = v; savePrefs();
+  rebuildEngine(engine.kind);
+});
+bindSeg('segEngine', (v) => {
+  if (!engine || switching || v === engine.kind) return;
+  prefs.engine = v; savePrefs(); engineNote = '';
+  rebuildEngine(v);
+});
+if (!HAS_WEBGPU) $('segEngine').querySelector('[data-v="gpu"]').disabled = true;
+
+function setEngineBusy(busy) {
+  for (const b of document.querySelectorAll('#segEngine button, #segQuality button')) {
+    if (b.dataset.v !== 'gpu' || HAS_WEBGPU) b.disabled = busy;
+  }
+}
+function syncEngineUI() {
+  const e = engine;
+  for (const b of $('segQuality').querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.v === e.key ? 'true' : 'false');
+  for (const b of $('segEngine').querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.v === e.kind ? 'true' : 'false');
+  const label = e.kind === 'gpu' ? 'WebGPU' : 'CPU';
+  $('gridInfo').textContent = `${label} · ${e.nx}×${e.ny} 格`;
+  $('qualityInfo').textContent = `網格 ${e.nx} × ${e.ny} · 最多 ${e.maxP.toLocaleString('en-US')} 顆粒子`;
+  let note = engineNote;
+  if (!note) {
+    if (e.kind === 'gpu') note = '整個流體模擬都在顯示卡上跑，可以用更多粒子。FPS 掉到 30 以下時建議調低一級。';
+    else if (!HAS_WEBGPU) note = '這個瀏覽器不支援 WebGPU，用 CPU 運算。';
+    else note = 'CPU 運算：粒子較少，但每台裝置都能跑。';
+    if (e.kind === 'cpu' && !getGLRenderer()) note += ' 也不支援 WebGL2，水面改用較粗的備援畫法。';
+  }
+  $('engineInfo').textContent = note;
 }
 
 for (const b of document.querySelectorAll('.scene')) b.addEventListener('click', () => loadScene(b.dataset.scene));
-$('btnClearWater').addEventListener('click', () => { sim.numP = 0; });
-$('btnClearWalls').addEventListener('click', () => { sim.clearSolids(); refreshSolids(); });
+$('btnClearWater').addEventListener('click', () => { if (engine && !switching) engine.clearWater(); });
+$('btnClearWalls').addEventListener('click', () => { if (engine && !switching) { engine.obs.clear(); engine.obstaclesChanged(); } });
 
 let paused = false;
 const playBtn = $('btnPlay'), stepBtn = $('btnStep');
@@ -1600,32 +2561,36 @@ window.addEventListener('keydown', (e) => {
   else if ((e.key === 'Delete' || e.key === 'Backspace') && selected && tag !== 'INPUT') { deleteSelected(); e.preventDefault(); }
 });
 
+glCanvas.addEventListener('webglcontextlost', () => {
+  glrState = null;
+  if (engine && engine.kind === 'cpu') {
+    engine.canvasRenderer = makeCanvasRenderer(engine);
+    engine.canvasRenderer.drawObstacles();
+    syncEngineUI();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Loop
 // ---------------------------------------------------------------------------
 const DT = 1 / 60;
 let acc = 0, last = performance.now();
-let statT = 0, inEMA = 0, outEMA = 0, frames = 0, fps = 0;
+let statT = 0, frames = 0, fps = 0, inRate = 0, outRate = 0;
+let totalsAt = { t: 0, in: 0, out: 0 };
 
 function simFrame() {
-  if (solidsDirty) refreshSolids();
-  drainedThisFrame = 0;
-  const before = sim.numP;
+  if (solidsDirty) { engine.obstaclesChanged(); solidsDirty = false; }
   emit(DT);
-  const emitted = sim.numP - before;
-  applyBrushTools();
-  const sub = clamp(Math.ceil(sim.maxSpeed() * DT / (2 * CELL)), 1, 3);
-  for (let k = 0; k < sub; k++) sim.step(DT / sub);
-  drainWater(DT);
-  inEMA = inEMA * 0.95 + emitted * LITRES_PER_PARTICLE / DT * 0.05;
-  outEMA = outEMA * 0.95 + drainedThisFrame * LITRES_PER_PARTICLE / DT * 0.05;
+  if (pointer.down && !drag && tool === 'pour') pour();
+  engine.step(DT, { drains, brush: brushInput(), gravity: -9.81 * +gravIn.value, flipRatio: +flipIn.value });
+  if (tool === 'stir') { pointer.vx *= 0.9; pointer.vy *= 0.9; }
+  simTime += DT;
 }
 
 function render() {
-  computeDisplayColors();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, view.cw, view.ch);
-  if (glr) glr.draw(); else canvasRenderer.draw();
+  engine.render();
   for (const d of drains) drawDrain(d, selected?.obj === d);
   for (const s of sources) drawSource(s, selected?.obj === s);
   if (pointer.over && ['wall', 'erase', 'pour', 'stir', 'sponge'].includes(tool)) {
@@ -1642,26 +2607,33 @@ function updateStats(now) {
   if (now - statT < 500) return;
   fps = frames * 1000 / (now - statT);
   frames = 0; statT = now;
-  $('stVol').textContent = `${(sim.numP * LITRES_PER_PARTICLE).toFixed(0)} L`;
-  $('stIn').textContent = `${inEMA.toFixed(1)} L/s`;
-  $('stOut').textContent = `${outEMA.toFixed(1)} L/s`;
-  $('stP').textContent = `${sim.numP.toLocaleString('en-US')} / ${MAX_P.toLocaleString('en-US')}`;
+  const lpp = engine.particleArea * DEPTH * 1000;   // litres per particle
+  const dt = simTime - totalsAt.t;
+  if (dt > 0) {
+    inRate = inRate * 0.5 + (totalIn - totalsAt.in) * lpp / dt * 0.5;
+    outRate = outRate * 0.5 + Math.max(0, engine.drainedTotal - totalsAt.out) * lpp / dt * 0.5;
+  }
+  totalsAt = { t: simTime, in: totalIn, out: engine.drainedTotal };
+  $('stVol').textContent = `${(engine.numP * lpp).toFixed(0)} L`;
+  $('stIn').textContent = `${inRate.toFixed(1)} L/s`;
+  $('stOut').textContent = `${outRate.toFixed(1)} L/s`;
+  $('stP').textContent = `${engine.numP.toLocaleString('en-US')} / ${engine.maxP.toLocaleString('en-US')}`;
   $('stFps').textContent = `${Math.round(fps)}`;
-  if (selected?.kind === 'drain') $('drnFlow').textContent = selected.obj.flow.toFixed(1);
 }
 
 function frame(now) {
   const elapsed = Math.min(0.1, (now - last) / 1000);
   last = now;
-  if (!paused) {
-    acc += elapsed;
-    // At most one step per display frame: slow machines run in slow motion instead of falling behind.
-    if (acc >= DT) { simFrame(); acc = Math.min(acc - DT, DT); }
-  } else if (stepOnce) {
-    simFrame(); stepOnce = false;
-  } else {
-    if (solidsDirty) refreshSolids();
-    if (pointer.down && (tool === 'pour' || tool === 'sponge')) applyBrushTools();
+  if (!switching) {
+    if (!paused) {
+      acc += elapsed;
+      // At most one step per display frame: slow machines run in slow motion instead of falling behind.
+      if (acc >= DT) { simFrame(); acc = Math.min(acc - DT, DT); }
+    } else if (stepOnce) {
+      simFrame(); stepOnce = false;
+    } else if (solidsDirty) {
+      engine.obstaclesChanged(); solidsDirty = false;
+    }
   }
   render();
   updateStats(now);
@@ -1671,27 +2643,14 @@ function frame(now) {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
-let canvasRenderer = null;
-let glr = null;
-buildWorld(qualityKey);
-try { glr = createGLRenderer(); } catch (err) { console.warn('WebGL2 renderer unavailable, using Canvas 2D:', err); glr = null; }
-if (!glr) {
-  canvasRenderer = makeCanvasRenderer();
-  $('rendererInfo').textContent = '這個瀏覽器不支援 WebGL2，水面改用較粗的備援畫法。';
-}
-glCanvas.addEventListener('webglcontextlost', () => {
-  glr = null;
-  canvasRenderer = makeCanvasRenderer();
-  canvasRenderer.drawObstacles();
-});
-
 new ResizeObserver(resize).observe(wrap);
-resize();
 setTool('wall');
-syncQualityUI();
-loadScene('cascade');
-if (document.fonts) document.fonts.ready.then(drawBackground);
-requestAnimationFrame((t) => { last = t; frame(t); });
+(async () => {
+  await rebuildEngine(prefs.engine);
+  loadScene('cascade');
+  if (document.fonts) document.fonts.ready.then(() => { if (engine) drawBackground(); });
+  requestAnimationFrame((t) => { last = t; statT = t; frame(t); });
+})();
 })();
 </script>
 </body>
