@@ -111,15 +111,15 @@ body {
   background: var(--tank-bezel);
   overflow: hidden;
 }
-#tank {
+.tank-wrap canvas {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
-  touch-action: none;
-  cursor: crosshair;
 }
+#bg, #gl { pointer-events: none; }
+#tank { touch-action: none; cursor: crosshair; }
 .hint {
   position: absolute;
   left: 12px;
@@ -233,6 +233,7 @@ body {
       <div class="stat"><span class="k">流入</span><span class="v" id="stIn">0.0 L/s</span></div>
       <div class="stat"><span class="k">排出</span><span class="v" id="stOut">0.0 L/s</span></div>
       <div class="stat"><span class="k">粒子</span><span class="v" id="stP">0</span></div>
+      <div class="stat"><span class="k">FPS</span><span class="v" id="stFps">–</span></div>
     </div>
     <div class="transport">
       <button class="btn primary" id="btnPlay" aria-pressed="false">暫停</button>
@@ -241,6 +242,8 @@ body {
   </header>
 
   <main class="tank-wrap" id="tankWrap">
+    <canvas id="bg" aria-hidden="true"></canvas>
+    <canvas id="gl" aria-hidden="true"></canvas>
     <canvas id="tank" aria-label="水槽模擬畫面"></canvas>
     <div class="hint" id="hint"></div>
   </main>
@@ -312,6 +315,15 @@ body {
 
     <section>
       <h2>環境</h2>
+      <div class="seg-label">模擬品質</div>
+      <div class="seg" id="segQuality">
+        <button data-v="low" aria-pressed="false">流暢</button>
+        <button data-v="mid" aria-pressed="false">標準</button>
+        <button data-v="high" aria-pressed="false">精細</button>
+        <button data-v="ultra" aria-pressed="false">極致</button>
+      </div>
+      <p class="readout" id="qualityInfo"></p>
+      <p class="readout" id="rendererInfo">品質越高，水越細緻，但越吃效能；FPS 掉到 30 以下時建議調低一級。</p>
       <div class="field">
         <label for="grav">重力</label><output id="gravOut" for="grav">1.00 g</output>
         <input type="range" id="grav" min="0" max="2" step="0.05" value="1">
@@ -357,53 +369,32 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 
 const wrap = $('tankWrap');
+const bgCanvas = $('bg');
+const glCanvas = $('gl');
 const canvas = $('tank');
 const ctx = canvas.getContext('2d');
 
 // ---------------------------------------------------------------------------
 // World: a 3 m tall tank, 10 cm thick (thickness only matters for litre readouts).
-// The grid is fixed at load; the view letterboxes it on resize.
+// The aspect ratio is fixed at load; the grid resolution comes from the quality setting.
 // ---------------------------------------------------------------------------
 const TANK_H = 3.0;
 const DEPTH = 0.1;
 const r0 = wrap.getBoundingClientRect();
 const ASPECT = clamp((r0.width || 960) / (r0.height || 600), 0.8, 2.0);
 const SMALL = window.innerWidth < 700;
-const NY = SMALL ? 54 : 70;
-const NX = Math.round(NY * ASPECT);
-const CELL = TANK_H / NY;
-const TANK_W = NX * CELL;
-const MAX_P = SMALL ? 9000 : 15000;
+
+// field: water-surface buffer resolution relative to CSS pixels
+const QUALITY = {
+  low:   { label: '流暢', ny: 54,  cap: 9000,  field: 0.5 },
+  mid:   { label: '標準', ny: 76,  cap: 18000, field: 0.65 },
+  high:  { label: '精細', ny: 100, cap: 32000, field: 0.8 },
+  ultra: { label: '極致', ny: 130, cap: 56000, field: 1.0 },
+};
+let qualityKey = SMALL ? 'mid' : 'high';
+try { const q = localStorage.getItem('flowtank.quality'); if (q && QUALITY[q]) qualityKey = q; } catch (e) { /* storage unavailable */ }
 
 const FLUID = 0, AIR = 1, SOLID = 2;
-
-function makeEDT(nx, ny) {
-  // Dead-reckoning Euclidean distance transform: distance (in cells) from each
-  // cell centre to the nearest cell whose mask value equals `val`.
-  const n = nx * ny, sx = new Int32Array(n), sy = new Int32Array(n);
-  return function (mask, val, out) {
-    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
-      const c = i * ny + j;
-      if (mask[c] === val) { out[c] = 0; sx[c] = i; sy[c] = j; } else { out[c] = 1e9; sx[c] = -1; }
-    }
-    const relax = (i, j, ni, nj) => {
-      if (ni < 0 || nj < 0 || ni >= nx || nj >= ny) return;
-      const nc = ni * ny + nj, qx = sx[nc];
-      if (qx < 0) return;
-      const dx = i - qx, dy = j - sy[nc], d = Math.sqrt(dx * dx + dy * dy), c = i * ny + j;
-      if (d < out[c]) { out[c] = d; sx[c] = qx; sy[c] = sy[nc]; }
-    };
-    for (let j = 0; j < ny; j++) {
-      for (let i = 0; i < nx; i++) { relax(i, j, i - 1, j); relax(i, j, i - 1, j - 1); relax(i, j, i, j - 1); relax(i, j, i + 1, j - 1); }
-      for (let i = nx - 1; i >= 0; i--) relax(i, j, i + 1, j);
-    }
-    for (let j = ny - 1; j >= 0; j--) {
-      for (let i = nx - 1; i >= 0; i--) { relax(i, j, i + 1, j); relax(i, j, i + 1, j + 1); relax(i, j, i, j + 1); relax(i, j, i - 1, j + 1); }
-      for (let i = 0; i < nx; i++) relax(i, j, i - 1, j);
-    }
-    return out;
-  };
-}
 
 // ---------------------------------------------------------------------------
 // FLIP fluid: particles carry the water, a MAC grid enforces incompressibility.
@@ -421,10 +412,10 @@ class Flip {
     this.cellType = new Int32Array(n);
     this.density = new Float32Array(n);
     this.solid = new Uint8Array(n);
-    this.sdf = new Float32Array(n);
-    this.toSolid = new Float32Array(n);
-    this.toFluid = new Float32Array(n);
-    this.edt = makeEDT(nx, ny);
+    // Obstacles live in a signed distance field at twice the grid resolution
+    // (metres, positive in open water). Brush strokes edit it directly.
+    this.F = 2; this.fnx = nx * 2; this.fny = ny * 2; this.fh = h / 2;
+    this.sdf = new Float32Array(this.fnx * this.fny);
 
     this.r = 0.3 * h;
     this.restDensity = 1 / (0.6 * 0.3 * Math.sqrt(3)) * 0.92;
@@ -446,37 +437,69 @@ class Flip {
     this.clearSolids();
   }
 
-  clearSolids() {
-    const { nx, ny, solid } = this;
-    solid.fill(0);
-    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++)
-      if (i === 0 || j === 0 || i === nx - 1 || j === ny - 1) solid[i * ny + j] = 1;
-    this.rebuildSolids();
+  borderSDF(x, y) {
+    const h = this.h;
+    return Math.min(x - h, (this.nx - 1) * h - x, y - h, (this.ny - 1) * h - y);
   }
 
-  rebuildSolids() {
-    const { solid, s, sdf, h } = this;
-    for (let c = 0; c < this.nCells; c++) s[c] = solid[c] ? 0 : 1;
-    this.edt(solid, 1, this.toSolid);
-    this.edt(solid, 0, this.toFluid);
-    for (let c = 0; c < this.nCells; c++)
-      sdf[c] = solid[c] ? -(this.toFluid[c] - 0.5) * h : (this.toSolid[c] - 0.5) * h;
+  clearSolids() {
+    const { fnx, fny, fh, sdf } = this;
+    for (let i = 0; i < fnx; i++) for (let j = 0; j < fny; j++) sdf[i * fny + j] = this.borderSDF((i + 0.5) * fh, (j + 0.5) * fh);
+    this.updateSolids();
+  }
+
+  // Grid cells whose centre lies inside an obstacle become solid for the pressure solve.
+  updateSolids(x0 = 0, y0 = 0, x1 = Infinity, y1 = Infinity) {
+    const { nx, ny, h, solid, s } = this;
+    const i0 = Math.max(0, Math.floor(x0 / h) - 1), i1 = Math.min(nx - 1, Math.ceil(x1 / h) + 1);
+    const j0 = Math.max(0, Math.floor(y0 / h) - 1), j1 = Math.min(ny - 1, Math.ceil(y1 / h) + 1);
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const c = i * ny + j;
+      const border = i === 0 || j === 0 || i === nx - 1 || j === ny - 1;
+      solid[c] = border || this.sampleSDF((i + 0.5) * h, (j + 0.5) * h) < 0 ? 1 : 0;
+      s[c] = solid[c] ? 0 : 1;
+    }
+  }
+
+  // Union (add) or subtract a disc. Only nodes near the disc are touched.
+  stampCircle(x, y, R, add) {
+    const { fnx, fny, fh, sdf } = this, m = R + 3 * this.h;
+    const i0 = Math.max(0, Math.floor((x - m) / fh)), i1 = Math.min(fnx - 1, Math.ceil((x + m) / fh));
+    const j0 = Math.max(0, Math.floor((y - m) / fh)), j1 = Math.min(fny - 1, Math.ceil((y + m) / fh));
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const px = (i + 0.5) * fh, py = (j + 0.5) * fh, d = Math.hypot(px - x, py - y) - R, c = i * fny + j;
+      sdf[c] = add ? Math.min(sdf[c], d) : Math.min(Math.max(sdf[c], -d), this.borderSDF(px, py));
+    }
+    this.updateSolids(x - m, y - m, x + m, y + m);
+  }
+
+  stampBox(x0, y0, x1, y1) {
+    const { fnx, fny, fh, sdf } = this, m = 3 * this.h;
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, hx = (x1 - x0) / 2, hy = (y1 - y0) / 2;
+    const i0 = Math.max(0, Math.floor((x0 - m) / fh)), i1 = Math.min(fnx - 1, Math.ceil((x1 + m) / fh));
+    const j0 = Math.max(0, Math.floor((y0 - m) / fh)), j1 = Math.min(fny - 1, Math.ceil((y1 + m) / fh));
+    for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+      const qx = Math.abs((i + 0.5) * fh - cx) - hx, qy = Math.abs((j + 0.5) * fh - cy) - hy;
+      const d = Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0), c = i * fny + j;
+      sdf[c] = Math.min(sdf[c], d);
+    }
+    this.updateSolids(x0 - m, y0 - m, x1 + m, y1 + m);
   }
 
   sampleSDF(x, y) {
-    const ny = this.ny, sdf = this.sdf;
-    const fx = clamp(x * this.invH - 0.5, 0, this.nx - 1.001);
-    const fy = clamp(y * this.invH - 0.5, 0, ny - 1.001);
-    const i = fx | 0, j = fy | 0, tx = fx - i, ty = fy - j, c = i * ny + j;
-    return (1 - tx) * ((1 - ty) * sdf[c] + ty * sdf[c + 1]) + tx * ((1 - ty) * sdf[c + ny] + ty * sdf[c + ny + 1]);
+    const fny = this.fny, sdf = this.sdf, inv = 1 / this.fh;
+    const fx = clamp(x * inv - 0.5, 0, this.fnx - 1.001);
+    const fy = clamp(y * inv - 0.5, 0, fny - 1.001);
+    const i = fx | 0, j = fy | 0, tx = fx - i, ty = fy - j, c = i * fny + j;
+    return (1 - tx) * ((1 - ty) * sdf[c] + ty * sdf[c + 1]) + tx * ((1 - ty) * sdf[c + fny] + ty * sdf[c + fny + 1]);
   }
 
-  addParticle(x, y, vx, vy, rgb) {
+  addParticle(x, y, vx, vy, r, g, b) {
     if (this.numP >= this.maxP) return false;
     const i = this.numP++;
     this.pos[2 * i] = x; this.pos[2 * i + 1] = y;
     this.vel[2 * i] = vx; this.vel[2 * i + 1] = vy;
-    this.col[3 * i] = rgb[0]; this.col[3 * i + 1] = rgb[1]; this.col[3 * i + 2] = rgb[2];
+    this.col[3 * i] = r; this.col[3 * i + 1] = g; this.col[3 * i + 2] = b;
     return true;
   }
 
@@ -490,7 +513,7 @@ class Flip {
 
   integrate(dt) {
     const { pos, vel } = this;
-    const g = this.gravity * dt, vmax = 1.5 * this.h / dt, vmax2 = vmax * vmax;
+    const g = this.gravity * dt, vmax = 2 * this.h / dt, vmax2 = vmax * vmax;
     for (let i = 0; i < this.numP; i++) {
       let vx = vel[2 * i], vy = vel[2 * i + 1] + g;
       const s2 = vx * vx + vy * vy;
@@ -560,7 +583,7 @@ class Flip {
       let x = pos[2 * i], y = pos[2 * i + 1];
       const d = this.sampleSDF(x, y);
       if (d < r) {
-        if (d < -1.6 * h) { this.removeParticle(i); continue; }
+        if (d < -2.5 * h) { this.removeParticle(i); continue; }
         let gx = this.sampleSDF(x + e, y) - this.sampleSDF(x - e, y);
         let gy = this.sampleSDF(x, y + e) - this.sampleSDF(x, y - e);
         const len = Math.sqrt(gx * gx + gy * gy);
@@ -649,10 +672,10 @@ class Flip {
       const x0 = Math.floor((x - h2) * invH), tx = ((x - h2) - x0 * h) * invH, x1 = Math.min(x0 + 1, nx - 2);
       const y0 = Math.floor((y - h2) * invH), ty = ((y - h2) - y0 * h) * invH, y1 = Math.min(y0 + 1, ny - 2);
       const sx = 1 - tx, sy = 1 - ty;
-      if (x0 < nx && y0 < ny) density[x0 * n + y0] += sx * sy;
-      if (x1 < nx && y0 < ny) density[x1 * n + y0] += tx * sy;
-      if (x1 < nx && y1 < ny) density[x1 * n + y1] += tx * ty;
-      if (x0 < nx && y1 < ny) density[x0 * n + y1] += sx * ty;
+      density[x0 * n + y0] += sx * sy;
+      density[x1 * n + y0] += tx * sy;
+      density[x1 * n + y1] += tx * ty;
+      density[x0 * n + y1] += sx * ty;
     }
   }
 
@@ -686,7 +709,7 @@ class Flip {
     this.collisions();
     this.transfer(true);
     this.updateDensity();
-    this.solve(30, 1.9);
+    this.solve(32, 1.9);
     this.transfer(false);
   }
 
@@ -700,20 +723,34 @@ class Flip {
   }
 }
 
-const sim = new Flip(NX, NY, CELL, MAX_P);
-const PARTICLE_AREA = CELL * CELL / sim.restDensity;          // m² of water per particle
-const LITRES_PER_PARTICLE = PARTICLE_AREA * DEPTH * 1000;
-$('gridInfo').textContent = `FLIP 流體 · ${NX}×${NY} 格 · 槽高 ${TANK_H} m`;
+// Grid-dependent globals, rebuilt when the quality changes.
+let NX, NY, CELL, TANK_W, MAX_P, sim, PARTICLE_AREA, LITRES_PER_PARTICLE;
+let dispCol = new Float32Array(0);   // per-particle display colour for the renderers
+
+function buildWorld(key) {
+  const q = QUALITY[key];
+  NY = q.ny; NX = Math.round(NY * ASPECT);
+  CELL = TANK_H / NY; TANK_W = NX * CELL; MAX_P = q.cap;
+  sim = new Flip(NX, NY, CELL, MAX_P);
+  sim.gravity = -9.81 * +$('grav').value;
+  sim.flipRatio = +$('flip').value;
+  PARTICLE_AREA = CELL * CELL / sim.restDensity;
+  LITRES_PER_PARTICLE = PARTICLE_AREA * DEPTH * 1000;
+  dispCol = new Float32Array(3 * MAX_P);
+  $('gridInfo').textContent = `FLIP 流體 · ${NX}×${NY} 格`;
+  $('qualityInfo').textContent = `網格 ${NX} × ${NY} · 最多 ${MAX_P.toLocaleString('en-US')} 顆粒子`;
+  if (canvasRenderer) canvasRenderer = makeCanvasRenderer();
+}
 
 // ---------------------------------------------------------------------------
 // Devices
 // ---------------------------------------------------------------------------
 const PALETTE = [
-  { name: '藍', rgb: [0.22, 0.52, 0.93] },
-  { name: '青', rgb: [0.10, 0.74, 0.72] },
-  { name: '玫瑰', rgb: [0.91, 0.32, 0.56] },
-  { name: '琥珀', rgb: [0.96, 0.66, 0.20] },
-  { name: '草綠', rgb: [0.44, 0.78, 0.30] },
+  { name: '藍', rgb: [0.20, 0.50, 0.93] },
+  { name: '青', rgb: [0.10, 0.72, 0.72] },
+  { name: '玫瑰', rgb: [0.91, 0.30, 0.55] },
+  { name: '琥珀', rgb: [0.96, 0.64, 0.18] },
+  { name: '草綠', rgb: [0.42, 0.78, 0.30] },
 ];
 const NOZZLE_LEN = 0.2;
 let sources = [], drains = [];
@@ -721,7 +758,7 @@ let selected = null;           // { kind: 'source'|'drain', obj }
 let nextId = 1;
 
 function makeSource(x, y, angleDeg, opts = {}) {
-  return { id: nextId++, x, y, angle: angleDeg * Math.PI / 180, speed: opts.speed ?? 2.5, width: opts.width ?? 0.14, color: opts.color ?? 0, on: true, acc: 0 };
+  return { id: nextId++, x, y, angle: angleDeg * Math.PI / 180, speed: opts.speed ?? 2.5, width: opts.width ?? 0.14, color: opts.color ?? 0, on: true, acc: 0, row: 0 };
 }
 function makeDrain(x, y, opts = {}) {
   return { id: nextId++, x, y, r: opts.r ?? 0.14, pull: opts.pull ?? 1, flow: 0 };
@@ -729,19 +766,25 @@ function makeDrain(x, y, opts = {}) {
 const sourceFlow = (s) => s.width * s.speed * DEPTH * 1000;   // L/s
 
 function emit(dt) {
+  // Rows of particles laid across the nozzle at the packing spacing, so the jet leaves as a clean sheet.
+  const spacing = 2 * sim.r, rowGap = Math.sqrt(3) * sim.r;
   for (const s of sources) {
     if (!s.on) continue;
     const dx = Math.cos(s.angle), dy = Math.sin(s.angle), nx = -dy, ny = dx;
     const mx = s.x + dx * NOZZLE_LEN * 0.5, my = s.y + dy * NOZZLE_LEN * 0.5;
-    s.acc += s.width * s.speed * dt / PARTICLE_AREA;
-    const rgb = PALETTE[s.color].rgb;
-    while (s.acc >= 1) {
-      s.acc -= 1;
-      if (sim.numP >= sim.maxP) { s.acc = 0; break; }
-      const t = (Math.random() - 0.5) * s.width, along = Math.random() * s.speed * dt;
-      const px = mx + nx * t + dx * along, py = my + ny * t + dy * along;
-      if (sim.sampleSDF(px, py) < sim.r) continue;
-      sim.addParticle(px, py, dx * s.speed, dy * s.speed, rgb);
+    const count = Math.max(1, Math.round(s.width / spacing));
+    const [cr, cg, cb] = PALETTE[s.color].rgb;
+    s.acc += s.speed * dt;
+    while (s.acc >= rowGap) {
+      s.acc -= rowGap;
+      if (sim.numP + count > sim.maxP) { s.acc = 0; break; }
+      const shift = (s.row++ & 1) ? 0.25 : -0.25;
+      for (let k = 0; k < count; k++) {
+        const t = ((k + 0.5 + shift) / count - 0.5) * s.width + (Math.random() - 0.5) * 0.1 * sim.r;
+        const px = mx + nx * t + dx * s.acc, py = my + ny * t + dy * s.acc;
+        if (sim.sampleSDF(px, py) < sim.r) continue;
+        sim.addParticle(px, py, dx * s.speed, dy * s.speed, cr, cg, cb);
+      }
     }
   }
 }
@@ -768,15 +811,13 @@ function drainWater(dt) {
 // ---------------------------------------------------------------------------
 // Painting helpers (world coordinates, metres)
 // ---------------------------------------------------------------------------
-let solidsDirty = true;
+let solidsDirty = true;   // obstacle field changed since the renderer last saw it
+function refreshSolids() {
+  solidsDirty = false;
+  if (glr) glr.uploadSDF(); else canvasRenderer.drawObstacles();
+}
 function paintCircle(x, y, R, val) {
-  const { nx, ny, solid } = sim;
-  const i0 = Math.max(1, Math.floor((x - R) / CELL)), i1 = Math.min(nx - 2, Math.ceil((x + R) / CELL));
-  const j0 = Math.max(1, Math.floor((y - R) / CELL)), j1 = Math.min(ny - 2, Math.ceil((y + R) / CELL));
-  for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
-    const cx = (i + 0.5) * CELL - x, cy = (j + 0.5) * CELL - y;
-    if (cx * cx + cy * cy <= R * R) solid[i * ny + j] = val;
-  }
+  sim.stampCircle(x, y, R, val === 1);
   solidsDirty = true;
 }
 function paintSegment(x0, y0, x1, y1, R, val) {
@@ -784,113 +825,140 @@ function paintSegment(x0, y0, x1, y1, R, val) {
   for (let k = 0; k <= steps; k++) { const t = k / steps; paintCircle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, R, val); }
 }
 function paintRect(x0, y0, x1, y1) {
-  const { nx, ny, solid } = sim;
-  for (let i = 1; i < nx - 1; i++) for (let j = 1; j < ny - 1; j++) {
-    const cx = (i + 0.5) * CELL, cy = (j + 0.5) * CELL;
-    if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) solid[i * ny + j] = 1;
-  }
+  sim.stampBox(x0, y0, x1, y1);
   solidsDirty = true;
 }
 function fillWater(x0, y0, x1, y1, rgb) {
-  sim.rebuildSolids(); solidsDirty = false; drawObstacleLayer();
+  refreshSolids();
   const r = sim.r, dx = 2 * r, dy = Math.sqrt(3) * r;
   let row = 0;
   for (let y = y0 + r; y < y1; y += dy, row++) {
     for (let x = x0 + r + (row % 2 ? r : 0); x < x1; x += dx) {
       if (sim.sampleSDF(x, y) < r) continue;
-      if (!sim.addParticle(x, y, 0, 0, rgb)) return;
+      if (!sim.addParticle(x, y, 0, 0, rgb[0], rgb[1], rgb[2])) return;
     }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Scenes
+// Scenes (positions as fractions of the tank so they fit any aspect)
 // ---------------------------------------------------------------------------
-const W = TANK_W, Hh = TANK_H;
 const SCENES = {
   cascade() {
+    const W = TANK_W, H = TANK_H;
     for (let k = 0; k < 4; k++) {
-      const x0 = W * (0.04 + k * 0.205), x1 = x0 + W * 0.19, y = Hh * (0.74 - k * 0.165);
+      const x0 = W * (0.04 + k * 0.205), x1 = x0 + W * 0.19, y = H * (0.74 - k * 0.165);
       paintSegment(x0, y + 0.02, x1, y - 0.03, 0.045, 1);
       paintSegment(x1, y - 0.03, x1, y + 0.11, 0.04, 1);
     }
     paintCircle(W * 0.5, 0.12, 0.2, 1);
-    sources.push(makeSource(W * 0.07, Hh * 0.9, -15, { speed: 2.2, width: 0.14, color: 0 }));
+    sources.push(makeSource(W * 0.07, H * 0.9, -15, { speed: 2.2, width: 0.14, color: 0 }));
     drains.push(makeDrain(W * 0.93, 0.18, { r: 0.13, pull: 1 }));
-    fillWater(CELL, CELL, W - CELL, Hh * 0.1, PALETTE[1].rgb);
+    fillWater(CELL, CELL, W - CELL, H * 0.1, PALETTE[1].rgb);
   },
   funnel() {
-    paintSegment(W * 0.14, Hh * 0.66, W * 0.45, Hh * 0.45, 0.045, 1);
-    paintSegment(W * 0.86, Hh * 0.66, W * 0.55, Hh * 0.45, 0.045, 1);
+    const W = TANK_W, H = TANK_H;
+    paintSegment(W * 0.14, H * 0.66, W * 0.45, H * 0.45, 0.045, 1);
+    paintSegment(W * 0.86, H * 0.66, W * 0.55, H * 0.45, 0.045, 1);
     for (let row = 0; row < 3; row++) {
-      const cols = 6 - (row % 2), y = Hh * (0.33 - row * 0.085);
-      for (let c = 0; c < cols; c++) {
-        const x = W * 0.5 + (c - (cols - 1) / 2) * W * 0.085;
-        paintCircle(x, y, 0.055, 1);
-      }
+      const cols = 6 - (row % 2), y = H * (0.33 - row * 0.085);
+      for (let c = 0; c < cols; c++) paintCircle(W * 0.5 + (c - (cols - 1) / 2) * W * 0.085, y, 0.055, 1);
     }
-    sources.push(makeSource(W * 0.06, Hh * 0.86, -8, { speed: 2.4, width: 0.12, color: 0 }));
-    sources.push(makeSource(W * 0.94, Hh * 0.86, 188, { speed: 2.4, width: 0.12, color: 2 }));
+    sources.push(makeSource(W * 0.06, H * 0.86, -8, { speed: 2.4, width: 0.12, color: 0 }));
+    sources.push(makeSource(W * 0.94, H * 0.86, 188, { speed: 2.4, width: 0.12, color: 2 }));
     drains.push(makeDrain(W * 0.5, 0.16, { r: 0.15, pull: 1.2 }));
-    fillWater(CELL, CELL, W - CELL, Hh * 0.06, PALETTE[3].rgb);
+    fillWater(CELL, CELL, W - CELL, H * 0.06, PALETTE[3].rgb);
   },
   dam() {
+    const W = TANK_W, H = TANK_H;
     paintCircle(W * 0.58, 0.28, 0.22, 1);
-    paintRect(W * 0.8, CELL, W * 0.84, Hh * 0.22);
-    fillWater(CELL, CELL, W * 0.36, Hh * 0.72, PALETTE[0].rgb);
+    paintRect(W * 0.8, CELL, W * 0.84, H * 0.22);
+    fillWater(CELL, CELL, W * 0.36, H * 0.72, PALETTE[0].rgb);
   },
   empty() {
-    sources.push(makeSource(W * 0.12, Hh * 0.8, -30, { speed: 2.6, width: 0.14, color: 0 }));
-    fillWater(CELL, CELL, W - CELL, Hh * 0.12, PALETTE[0].rgb);
+    const W = TANK_W, H = TANK_H;
+    sources.push(makeSource(W * 0.12, H * 0.8, -30, { speed: 2.6, width: 0.14, color: 0 }));
+    fillWater(CELL, CELL, W - CELL, H * 0.12, PALETTE[0].rgb);
   },
 };
 
-let currentScene = 'cascade';
 function loadScene(name) {
-  currentScene = name;
   sim.numP = 0;
   sim.u.fill(0); sim.v.fill(0);
   sources = []; drains = []; select(null);
   sim.clearSolids();
   SCENES[name]();
-  sim.rebuildSolids(); solidsDirty = false; drawObstacleLayer();
+  refreshSolids();
+}
+
+// Switch grid resolution, carrying over obstacles, devices and water.
+function setQuality(key) {
+  if (key === qualityKey) return;
+  const old = sim, oldArea = PARTICLE_AREA;
+  qualityKey = key;
+  try { localStorage.setItem('flowtank.quality', key); } catch (e) { /* storage unavailable */ }
+  buildWorld(key);
+  // Resample the obstacle field; where the old value only reflects the old tank wall, use the new wall.
+  for (let i = 0; i < sim.fnx; i++) for (let j = 0; j < sim.fny; j++) {
+    const x = (i + 0.5) * sim.fh, y = (j + 0.5) * sim.fh;
+    const v = old.sampleSDF(x, y), wall = old.borderSDF(x, y);
+    sim.sdf[i * sim.fny + j] = Math.min(v >= wall - 1e-6 ? Infinity : v, sim.borderSDF(x, y));
+  }
+  sim.updateSolids();
+  const ratio = oldArea / PARTICLE_AREA, whole = Math.floor(ratio), frac = ratio - whole;
+  for (let p = 0; p < old.numP && sim.numP < sim.maxP; p++) {
+    const n = whole + (Math.random() < frac ? 1 : 0);
+    for (let k = 0; k < n; k++) {
+      const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * old.r * 1.2;
+      const x = old.pos[2 * p] + Math.cos(a) * rr, y = old.pos[2 * p + 1] + Math.sin(a) * rr;
+      if (sim.sampleSDF(x, y) < 0) continue;
+      sim.addParticle(x, y, old.vel[2 * p], old.vel[2 * p + 1], old.col[3 * p], old.col[3 * p + 1], old.col[3 * p + 2]);
+    }
+  }
+  for (let k = 0; k < 4; k++) { sim.pushApart(2); sim.collisions(); }
+  for (const s of sources) { s.x = clamp(s.x, CELL * 1.5, TANK_W - CELL * 1.5); s.acc = 0; }
+  for (const d of drains) d.x = clamp(d.x, CELL * 1.5, TANK_W - CELL * 1.5);
+  resize();
+  refreshSolids();
+  syncQualityUI();
 }
 
 // ---------------------------------------------------------------------------
-// View
+// View: three stacked canvases — background, WebGL (water + obstacles), 2D overlay (devices).
 // ---------------------------------------------------------------------------
-const view = { s: 1, ox: 0, oy: 0, dpr: 1, cw: 1, ch: 1 };
-const sx = (x) => view.ox + x * view.s;
-const sy = (y) => view.oy + (TANK_H - y) * view.s;
-const bgLayer = document.createElement('canvas');
+const view = { dpr: 1, cw: 1, ch: 1, tx: 0, ty: 0, tw: 1, th: 1, s: 1 };
+const sx = (x) => view.tx + x * view.s;
+const sy = (y) => view.ty + (TANK_H - y) * view.s;
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = wrap.clientWidth, h = wrap.clientHeight;
   view.dpr = dpr; view.cw = Math.max(1, Math.round(w * dpr)); view.ch = Math.max(1, Math.round(h * dpr));
-  canvas.width = view.cw; canvas.height = view.ch;
+  for (const c of [bgCanvas, glCanvas, canvas]) { c.width = view.cw; c.height = view.ch; }
   const pad = 10 * dpr;
-  view.s = Math.min((view.cw - 2 * pad) / TANK_W, (view.ch - 2 * pad) / TANK_H);
-  view.ox = (view.cw - TANK_W * view.s) / 2;
-  view.oy = (view.ch - TANK_H * view.s) / 2;
+  const s = Math.min((view.cw - 2 * pad) / TANK_W, (view.ch - 2 * pad) / TANK_H);
+  view.tw = Math.round(TANK_W * s); view.th = Math.round(TANK_H * s);
+  view.s = view.th / TANK_H;
+  view.tx = Math.round((view.cw - view.tw) / 2); view.ty = Math.round((view.ch - view.th) / 2);
   drawBackground();
 }
 
 function drawBackground() {
-  bgLayer.width = view.cw; bgLayer.height = view.ch;
-  const g = bgLayer.getContext('2d');
-  const x0 = sx(0), y0 = sy(TANK_H), w = TANK_W * view.s, h = TANK_H * view.s;
+  const g = bgCanvas.getContext('2d');
+  g.clearRect(0, 0, view.cw, view.ch);
+  const x0 = view.tx, y0 = view.ty, w = view.tw, h = view.th;
   const grad = g.createLinearGradient(0, y0, 0, y0 + h);
-  grad.addColorStop(0, '#16262d'); grad.addColorStop(1, '#0b151a');
+  grad.addColorStop(0, '#16262d'); grad.addColorStop(1, '#0a1419');
   g.fillStyle = grad; g.fillRect(x0, y0, w, h);
   // 10 cm grid, stronger every 50 cm
+  const line = Math.max(1, Math.round(view.dpr * 0.6));
   for (let k = 0; k * 0.1 <= TANK_W + 1e-6; k++) {
     g.fillStyle = k % 5 === 0 ? 'rgba(170,210,225,0.075)' : 'rgba(170,210,225,0.03)';
-    g.fillRect(Math.round(sx(k * 0.1)), y0, Math.max(1, view.dpr * 0.6), h);
+    g.fillRect(Math.round(sx(k * 0.1)), y0, line, h);
   }
   for (let k = 0; k * 0.1 <= TANK_H + 1e-6; k++) {
     g.fillStyle = k % 5 === 0 ? 'rgba(170,210,225,0.075)' : 'rgba(170,210,225,0.03)';
-    g.fillRect(x0, Math.round(sy(k * 0.1)), w, Math.max(1, view.dpr * 0.6));
+    g.fillRect(x0, Math.round(sy(k * 0.1)), w, line);
   }
   // depth ruler on the inside of the left wall
   const fs = Math.round(10 * view.dpr);
@@ -907,139 +975,357 @@ function drawBackground() {
   g.fillText('cm', sx(CELL) + 15 * view.dpr, sy(TANK_H - CELL) + 10 * view.dpr);
 }
 
-// Obstacles: rendered from the signed distance field, 4 texels per cell, with a bevel.
-const OF = 4, OW = NX * OF, OH = NY * OF;
-const obsLayer = document.createElement('canvas'); obsLayer.width = OW; obsLayer.height = OH;
-const obsCtx = obsLayer.getContext('2d');
-const obsImg = obsCtx.createImageData(OW, OH);
-function drawObstacleLayer() {
-  const data = obsImg.data, tex = CELL / OF, e = 0.35 * CELL;
-  const Lx = -0.5, Ly = 0.866;
-  for (let py = 0; py < OH; py++) {
-    const y = TANK_H - (py + 0.5) * tex;
-    for (let px = 0; px < OW; px++) {
-      const x = (px + 0.5) * tex, o = 4 * (py * OW + px);
-      const d = sim.sampleSDF(x, y);
-      const a = clamp(0.5 - d / tex, 0, 1);
-      if (a <= 0) { data[o + 3] = 0; continue; }
-      let gx = sim.sampleSDF(x + e, y) - sim.sampleSDF(x - e, y);
-      let gy = sim.sampleSDF(x, y + e) - sim.sampleSDF(x, y - e);
-      const len = Math.hypot(gx, gy) || 1; gx /= len; gy /= len;
-      const bevel = 1 - smooth(0, 0.5 * CELL, -d);
-      const light = (gx * Lx + gy * Ly) * bevel;
-      const hsh = (Math.imul(px, 73856093) ^ Math.imul(py, 19349663)) >>> 0;
-      const noise = ((hsh % 1000) / 1000 - 0.5) * 12;
-      const base = 112 + noise + light * 62 - (1 - bevel) * 8;
-      data[o] = base; data[o + 1] = base + 4; data[o + 2] = base + 2; data[o + 3] = a * 255;
-    }
-  }
-  obsCtx.putImageData(obsImg, 0, 0);
-}
-
-// Water: particles splatted to a 3×-per-cell field, blurred, then thresholded into a surface.
-const RF = 3, RW = NX * RF, RH = NY * RF, RN = RW * RH;
-const fD = new Float32Array(RN), fR = new Float32Array(RN), fG = new Float32Array(RN), fB = new Float32Array(RN), fS = new Float32Array(RN), fT = new Float32Array(RN);
-const waterLayer = document.createElement('canvas'); waterLayer.width = RW; waterLayer.height = RH;
-const waterCtx = waterLayer.getContext('2d');
-const waterImg = waterCtx.createImageData(RW, RH);
-
-function blur(a) {
-  for (let j = 0; j < RH; j++) {
-    const row = j * RW;
-    fT[row] = a[row]; fT[row + RW - 1] = a[row + RW - 1];
-    for (let i = 1; i < RW - 1; i++) fT[row + i] = (a[row + i - 1] + 2 * a[row + i] + a[row + i + 1]) * 0.25;
-  }
-  for (let i = 0; i < RW; i++) { a[i] = fT[i]; a[RN - RW + i] = fT[RN - RW + i]; }
-  for (let j = 1; j < RH - 1; j++) {
-    const row = j * RW;
-    for (let i = 0; i < RW; i++) a[row + i] = (fT[row + i - RW] + 2 * fT[row + i] + fT[row + i + RW]) * 0.25;
-  }
-}
-
-function speedRamp(sp, out) {
+function speedRamp(sp, out, o) {
   const t = clamp(sp / 4.5, 0, 1);
-  if (t < 0.5) { const k = t / 0.5; out[0] = 0.08 + 0.04 * k; out[1] = 0.26 + 0.42 * k; out[2] = 0.62 + 0.24 * k; }
-  else { const k = (t - 0.5) / 0.5; out[0] = 0.12 + 0.82 * k; out[1] = 0.68 + 0.28 * k; out[2] = 0.86 + 0.13 * k; }
+  if (t < 0.5) { const k = t / 0.5; out[o] = 0.08 + 0.04 * k; out[o + 1] = 0.26 + 0.42 * k; out[o + 2] = 0.62 + 0.24 * k; }
+  else { const k = (t - 0.5) / 0.5; out[o] = 0.12 + 0.82 * k; out[o + 1] = 0.68 + 0.28 * k; out[o + 2] = 0.86 + 0.13 * k; }
 }
 
 let viewMode = 'surface', colorMode = 'source';
-const tmpRGB = [0, 0, 0];
-function renderWater() {
-  fD.fill(0); fR.fill(0); fG.fill(0); fB.fill(0); fS.fill(0);
-  const { pos, vel, col } = sim, k = RF / CELL;
+function computeDisplayColors() {
+  const { vel, col } = sim;
   for (let p = 0; p < sim.numP; p++) {
-    const gx = pos[2 * p] * k - 0.5, gy = (TANK_H - pos[2 * p + 1]) * k - 0.5;
-    const i0 = clamp(Math.floor(gx), 0, RW - 2), j0 = clamp(Math.floor(gy), 0, RH - 2);
-    const tx = clamp(gx - i0, 0, 1), ty = clamp(gy - j0, 0, 1);
-    const vx = vel[2 * p], vy = vel[2 * p + 1], sp = Math.sqrt(vx * vx + vy * vy);
-    let r, g, b;
-    if (colorMode === 'speed') { speedRamp(sp, tmpRGB); r = tmpRGB[0]; g = tmpRGB[1]; b = tmpRGB[2]; }
-    else { r = col[3 * p]; g = col[3 * p + 1]; b = col[3 * p + 2]; }
-    const c0 = j0 * RW + i0;
-    const w0 = (1 - tx) * (1 - ty), w1 = tx * (1 - ty), w2 = (1 - tx) * ty, w3 = tx * ty;
-    fD[c0] += w0; fD[c0 + 1] += w1; fD[c0 + RW] += w2; fD[c0 + RW + 1] += w3;
-    fR[c0] += w0 * r; fR[c0 + 1] += w1 * r; fR[c0 + RW] += w2 * r; fR[c0 + RW + 1] += w3 * r;
-    fG[c0] += w0 * g; fG[c0 + 1] += w1 * g; fG[c0 + RW] += w2 * g; fG[c0 + RW + 1] += w3 * g;
-    fB[c0] += w0 * b; fB[c0 + 1] += w1 * b; fB[c0 + RW] += w2 * b; fB[c0 + RW + 1] += w3 * b;
-    fS[c0] += w0 * sp; fS[c0 + 1] += w1 * sp; fS[c0 + RW] += w2 * sp; fS[c0 + RW + 1] += w3 * sp;
-  }
-  for (let pass = 0; pass < 2; pass++) { blur(fD); blur(fR); blur(fG); blur(fB); blur(fS); }
-  const data = waterImg.data, norm = sim.restDensity / (RF * RF);
-  for (let c = 0; c < RN; c++) {
-    const o = 4 * c, dens = fD[c], d = dens / norm;
-    if (d < 0.12) { data[o + 3] = 0; continue; }
-    const inv = 1 / dens;
-    let r = fR[c] * inv, g = fG[c] * inv, b = fB[c] * inv;
-    const sp = fS[c] * inv;
-    const a = smooth(0.14, 0.34, d);
-    const rim = 1 - smooth(0.34, 0.62, d);
-    const foam = colorMode === 'speed' ? 0 : smooth(2.8, 5.5, sp);
-    const m = Math.max(rim * 0.42, foam * 0.6);
-    const deep = 0.88 + 0.12 * smooth(1.2, 0.6, d);
-    r = (r + (1 - r) * m) * deep; g = (g + (1 - g) * m) * deep; b = (b + (1 - b) * m) * deep;
-    data[o] = r * 255; data[o + 1] = g * 255; data[o + 2] = b * 255; data[o + 3] = a * 228;
-  }
-  waterCtx.putImageData(waterImg, 0, 0);
-  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(waterLayer, sx(0), sy(TANK_H), TANK_W * view.s, TANK_H * view.s);
-}
-
-const bucketHead = new Int32Array(64), bucketNext = new Int32Array(MAX_P);
-function renderParticles() {
-  const { pos, vel, col } = sim;
-  bucketHead.fill(-1);
-  for (let p = 0; p < sim.numP; p++) {
-    let r, g, b;
-    if (colorMode === 'speed') { speedRamp(Math.hypot(vel[2 * p], vel[2 * p + 1]), tmpRGB); r = tmpRGB[0]; g = tmpRGB[1]; b = tmpRGB[2]; }
-    else { r = col[3 * p]; g = col[3 * p + 1]; b = col[3 * p + 2]; }
-    const key = (Math.min(3, (r * 4) | 0) << 4) | (Math.min(3, (g * 4) | 0) << 2) | Math.min(3, (b * 4) | 0);
-    bucketNext[p] = bucketHead[key]; bucketHead[key] = p;
-  }
-  const size = Math.max(1.5, 1.7 * sim.r * view.s), half = size / 2;
-  for (let key = 0; key < 64; key++) {
-    if (bucketHead[key] < 0) continue;
-    const r = ((key >> 4) & 3) / 3, g = ((key >> 2) & 3) / 3, b = (key & 3) / 3;
-    ctx.fillStyle = `rgb(${(40 + r * 215) | 0},${(40 + g * 215) | 0},${(40 + b * 215) | 0})`;
-    ctx.beginPath();
-    for (let p = bucketHead[key]; p >= 0; p = bucketNext[p]) ctx.rect(sx(pos[2 * p]) - half, sy(pos[2 * p + 1]) - half, size, size);
-    ctx.fill();
+    const vx = vel[2 * p], vy = vel[2 * p + 1], sp = Math.sqrt(vx * vx + vy * vy), o = 3 * p;
+    if (colorMode === 'speed') { speedRamp(sp, dispCol, o); continue; }
+    const f = smooth(2.6, 5.5, sp) * 0.55;          // fast water whitens like aerated foam
+    dispCol[o] = col[o] + (1 - col[o]) * f;
+    dispCol[o + 1] = col[o + 1] + (1 - col[o + 1]) * f;
+    dispCol[o + 2] = col[o + 2] + (1 - col[o + 2]) * f;
   }
 }
 
+// ---------------------------------------------------------------------------
+// WebGL renderer: particles are splatted as smooth kernels into a half-float
+// field, then a full-resolution pass extracts an anti-aliased, shaded surface.
+// Obstacles are shaded straight from the signed distance field.
+// ---------------------------------------------------------------------------
+const KERNEL = 3.2;   // splat radius in particle radii
+
+function createGLRenderer() {
+  const gl = glCanvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: false });
+  if (!gl || !gl.getExtension('EXT_color_buffer_float')) return null;
+
+  const shader = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const program = (vs, fs) => {
+    const p = gl.createProgram();
+    gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const u = {};
+    for (let i = 0, n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i < n; i++) {
+      const name = gl.getActiveUniform(p, i).name;
+      u[name] = gl.getUniformLocation(p, name);
+    }
+    return { p, u };
+  };
+
+  const QUAD_VS = `#version 300 es
+layout(location=0) in vec2 aP; out vec2 vUV;
+void main(){ vUV = aP * 0.5 + 0.5; gl_Position = vec4(aP, 0.0, 1.0); }`;
+  const POINT_VS = `#version 300 es
+layout(location=0) in vec2 aPos; layout(location=1) in vec3 aCol;
+uniform vec2 uWorld; uniform float uSize; out vec3 vCol;
+void main(){ gl_Position = vec4(aPos / uWorld * 2.0 - 1.0, 0.0, 1.0); gl_PointSize = uSize; vCol = aCol; }`;
+
+  const splat = program(POINT_VS, `#version 300 es
+precision highp float; in vec3 vCol; out vec4 o;
+void main(){
+  vec2 q = gl_PointCoord * 2.0 - 1.0; float d2 = dot(q, q);
+  if (d2 >= 1.0) discard;
+  float w = 1.0 - d2; w = w * w * w;
+  o = vec4(vCol * w, w);
+}`);
+
+  const dots = program(POINT_VS, `#version 300 es
+precision highp float; in vec3 vCol; out vec4 o;
+void main(){
+  vec2 q = gl_PointCoord * 2.0 - 1.0; float d2 = dot(q, q);
+  float a = 1.0 - smoothstep(0.75, 1.0, d2);
+  if (a <= 0.0) discard;
+  vec3 c = vCol * (0.8 + 0.3 * (1.0 - d2));
+  o = vec4(c * a, a);
+}`);
+
+  const surface = program(QUAD_VS, `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 o;
+uniform sampler2D uField; uniform vec2 uTexel; uniform float uNorm; uniform float uBump;
+const float T = 0.33;
+void main(){
+  vec4 f = texture(uField, vUV);
+  float d = f.a * uNorm;
+  float a = clamp((d - T) / max(fwidth(d), 1e-4) + 0.5, 0.0, 1.0);
+  if (a <= 0.0) { o = vec4(0.0); return; }
+  vec3 col = f.rgb / max(f.a, 1e-5);
+  vec2 e = uTexel * 1.5;
+  float dl = texture(uField, vUV - vec2(e.x, 0.0)).a, dr = texture(uField, vUV + vec2(e.x, 0.0)).a;
+  float db = texture(uField, vUV - vec2(0.0, e.y)).a, dt = texture(uField, vUV + vec2(0.0, e.y)).a;
+  float nearSurface = 1.0 - smoothstep(T, T + 0.55, d);   // keep the interior flat; tilt normals only at the surface
+  vec3 n = normalize(vec3(-vec2(dr - dl, dt - db) * uNorm * uBump * nearSurface, 1.0));
+  float thick = smoothstep(0.45, 1.1, d);
+  vec3 base = col * mix(1.04, 0.74, thick);
+  float edge = 1.0 - smoothstep(T, T + 0.2, d);
+  vec3 L = normalize(vec3(-0.45, 0.75, 0.55));
+  float diff = clamp(dot(n, L), 0.0, 1.0);
+  float spec = pow(clamp(dot(n, normalize(L + vec3(0.0, 0.0, 1.0))), 0.0, 1.0), 48.0);
+  vec3 c = base * (0.70 + 0.40 * diff) + edge * 0.42 * (vec3(1.0) - base) + spec * 0.5;
+  float alpha = a * mix(0.80, 0.94, thick);
+  o = vec4(min(c, vec3(1.0)) * alpha, alpha);
+}`);
+
+  const rock = program(QUAD_VS, `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 o;
+uniform sampler2D uSdf; uniform vec2 uWorld; uniform float uPx; uniform vec2 uE; uniform float uBevel;
+float S(vec2 uv){ return texture(uSdf, uv).r; }
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main(){
+  float d = S(vUV);
+  float a = clamp(0.5 - d / uPx, 0.0, 1.0);
+  if (a <= 0.0) { o = vec4(0.0); return; }
+  vec2 g = vec2(S(vUV + vec2(uE.x, 0.0)) - S(vUV - vec2(uE.x, 0.0)), S(vUV + vec2(0.0, uE.y)) - S(vUV - vec2(0.0, uE.y)));
+  g /= max(length(g), 1e-6);
+  float bevel = 1.0 - smoothstep(0.0, uBevel, -d);
+  float light = dot(g, vec2(-0.5, 0.866)) * bevel;
+  vec2 w = vUV * uWorld;
+  float grain = hash(floor(w * 220.0)) * 0.6 + hash(floor(w * 45.0)) * 0.4;
+  float base = 0.42 + (grain - 0.5) * 0.07 + light * 0.24 - (1.0 - bevel) * 0.035;
+  vec3 c = vec3(base, base * 1.03, base * 1.015);
+  o = vec4(c * a, a);
+}`);
+
+  const quadVAO = gl.createVertexArray();
+  gl.bindVertexArray(quadVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+  const ptVAO = gl.createVertexArray();
+  gl.bindVertexArray(ptVAO);
+  const posBuf = gl.createBuffer(), colBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  const maxPoint = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE)[1];
+  const texParams = (filter) => {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  };
+
+  let fieldTex = null, fbo = null, fw = 0, fh = 0;
+  function ensureField(w, h) {
+    if (w === fw && h === fh) return;
+    if (fieldTex) { gl.deleteTexture(fieldTex); gl.deleteFramebuffer(fbo); }
+    fieldTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, fieldTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    texParams(gl.LINEAR);
+    fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fieldTex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!ok) throw new Error('half-float framebuffer unsupported');
+    fw = w; fh = h;
+  }
+
+  const sdfTex = gl.createTexture();
+  let sdfBuf = new Float32Array(0);
+  function uploadSDF() {
+    const { fnx: nx, fny: ny, sdf } = sim;
+    if (sdfBuf.length !== nx * ny) sdfBuf = new Float32Array(nx * ny);
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) sdfBuf[j * nx + i] = sdf[i * ny + j];
+    gl.bindTexture(gl.TEXTURE_2D, sdfTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, nx, ny, 0, gl.RED, gl.FLOAT, sdfBuf);
+    texParams(gl.LINEAR);
+  }
+
+  function draw() {
+    const n = sim.numP;
+    const tyGL = view.ch - (view.ty + view.th);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, view.cw, view.ch);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuf); gl.bufferData(gl.ARRAY_BUFFER, sim.pos.subarray(0, 2 * n), gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, colBuf); gl.bufferData(gl.ARRAY_BUFFER, dispCol.subarray(0, 3 * n), gl.DYNAMIC_DRAW);
+
+    if (viewMode === 'surface') {
+      const q = QUALITY[qualityKey].field;
+      const w = Math.max(16, Math.round(view.tw / view.dpr * q)), h = Math.max(16, Math.round(view.th / view.dpr * q));
+      ensureField(w, h);
+      const kr = KERNEL * sim.r;                       // world radius of a splat
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.viewport(0, 0, w, h);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.useProgram(splat.p);
+      gl.uniform2f(splat.u.uWorld, TANK_W, TANK_H);
+      gl.uniform1f(splat.u.uSize, Math.min(maxPoint, 2 * kr * w / TANK_W));
+      gl.bindVertexArray(ptVAO);
+      gl.drawArrays(gl.POINTS, 0, n);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(view.tx, tyGL, view.tw, view.th);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(surface.p);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, fieldTex);
+      gl.uniform1i(surface.u.uField, 0);
+      gl.uniform2f(surface.u.uTexel, 1 / w, 1 / h);
+      // field value deep inside water: particle density × ∫(1-q²)³ over the splat disc
+      gl.uniform1f(surface.u.uNorm, 1 / (sim.restDensity / (CELL * CELL) * Math.PI * kr * kr / 4));
+      gl.uniform1f(surface.u.uBump, kr * w / TANK_W * 0.5);
+      gl.bindVertexArray(quadVAO);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    } else {
+      gl.viewport(view.tx, tyGL, view.tw, view.th);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(dots.p);
+      gl.uniform2f(dots.u.uWorld, TANK_W, TANK_H);
+      gl.uniform1f(dots.u.uSize, Math.min(maxPoint, Math.max(2, 2 * sim.r * view.s)));
+      gl.bindVertexArray(ptVAO);
+      gl.drawArrays(gl.POINTS, 0, n);
+    }
+
+    gl.viewport(view.tx, tyGL, view.tw, view.th);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(rock.p);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sdfTex);
+    gl.uniform1i(rock.u.uSdf, 0);
+    gl.uniform2f(rock.u.uWorld, TANK_W, TANK_H);
+    gl.uniform1f(rock.u.uPx, 1 / view.s);
+    gl.uniform2f(rock.u.uE, 0.5 / sim.fnx, 0.5 / sim.fny);
+    gl.uniform1f(rock.u.uBevel, 0.03);
+    gl.bindVertexArray(quadVAO);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.bindVertexArray(null);
+  }
+
+  ensureField(64, 64);   // fail early if half-float targets are missing
+  return { uploadSDF, draw };
+}
+
+// ---------------------------------------------------------------------------
+// Canvas 2D fallback renderer for browsers without WebGL2.
+// ---------------------------------------------------------------------------
+function makeCanvasRenderer() {
+  const OF = 4, OW = NX * OF, OH = NY * OF;
+  const obsLayer = document.createElement('canvas'); obsLayer.width = OW; obsLayer.height = OH;
+  const obsCtx = obsLayer.getContext('2d'), obsImg = obsCtx.createImageData(OW, OH);
+  const RF = 3, RW = NX * RF, RH = NY * RF, RN = RW * RH;
+  const fD = new Float32Array(RN), fR = new Float32Array(RN), fG = new Float32Array(RN), fB = new Float32Array(RN), fT = new Float32Array(RN);
+  const waterLayer = document.createElement('canvas'); waterLayer.width = RW; waterLayer.height = RH;
+  const waterCtx = waterLayer.getContext('2d'), waterImg = waterCtx.createImageData(RW, RH);
+
+  function drawObstacles() {
+    const data = obsImg.data, tex = CELL / OF, e = 0.35 * CELL;
+    for (let py = 0; py < OH; py++) {
+      const y = TANK_H - (py + 0.5) * tex;
+      for (let px = 0; px < OW; px++) {
+        const x = (px + 0.5) * tex, o = 4 * (py * OW + px);
+        const d = sim.sampleSDF(x, y);
+        const a = clamp(0.5 - d / tex, 0, 1);
+        if (a <= 0) { data[o + 3] = 0; continue; }
+        let gx = sim.sampleSDF(x + e, y) - sim.sampleSDF(x - e, y);
+        let gy = sim.sampleSDF(x, y + e) - sim.sampleSDF(x, y - e);
+        const len = Math.hypot(gx, gy) || 1; gx /= len; gy /= len;
+        const bevel = 1 - smooth(0, 0.03, -d);
+        const light = (gx * -0.5 + gy * 0.866) * bevel;
+        const hsh = (Math.imul(px, 73856093) ^ Math.imul(py, 19349663)) >>> 0;
+        const base = 112 + ((hsh % 1000) / 1000 - 0.5) * 12 + light * 62 - (1 - bevel) * 8;
+        data[o] = base; data[o + 1] = base + 4; data[o + 2] = base + 2; data[o + 3] = a * 255;
+      }
+    }
+    obsCtx.putImageData(obsImg, 0, 0);
+  }
+
+  function blur(a) {
+    for (let j = 0; j < RH; j++) {
+      const row = j * RW;
+      fT[row] = a[row]; fT[row + RW - 1] = a[row + RW - 1];
+      for (let i = 1; i < RW - 1; i++) fT[row + i] = (a[row + i - 1] + 2 * a[row + i] + a[row + i + 1]) * 0.25;
+    }
+    for (let i = 0; i < RW; i++) { a[i] = fT[i]; a[RN - RW + i] = fT[RN - RW + i]; }
+    for (let j = 1; j < RH - 1; j++) {
+      const row = j * RW;
+      for (let i = 0; i < RW; i++) a[row + i] = (fT[row + i - RW] + 2 * fT[row + i] + fT[row + i + RW]) * 0.25;
+    }
+  }
+
+  function drawWater() {
+    fD.fill(0); fR.fill(0); fG.fill(0); fB.fill(0);
+    const pos = sim.pos, k = RF / CELL;
+    for (let p = 0; p < sim.numP; p++) {
+      const gx = pos[2 * p] * k - 0.5, gy = (TANK_H - pos[2 * p + 1]) * k - 0.5;
+      const i0 = clamp(Math.floor(gx), 0, RW - 2), j0 = clamp(Math.floor(gy), 0, RH - 2);
+      const tx = clamp(gx - i0, 0, 1), ty = clamp(gy - j0, 0, 1);
+      const r = dispCol[3 * p], g = dispCol[3 * p + 1], b = dispCol[3 * p + 2], c0 = j0 * RW + i0;
+      const w0 = (1 - tx) * (1 - ty), w1 = tx * (1 - ty), w2 = (1 - tx) * ty, w3 = tx * ty;
+      fD[c0] += w0; fD[c0 + 1] += w1; fD[c0 + RW] += w2; fD[c0 + RW + 1] += w3;
+      fR[c0] += w0 * r; fR[c0 + 1] += w1 * r; fR[c0 + RW] += w2 * r; fR[c0 + RW + 1] += w3 * r;
+      fG[c0] += w0 * g; fG[c0 + 1] += w1 * g; fG[c0 + RW] += w2 * g; fG[c0 + RW + 1] += w3 * g;
+      fB[c0] += w0 * b; fB[c0 + 1] += w1 * b; fB[c0 + RW] += w2 * b; fB[c0 + RW + 1] += w3 * b;
+    }
+    for (let pass = 0; pass < 2; pass++) { blur(fD); blur(fR); blur(fG); blur(fB); }
+    const data = waterImg.data, norm = sim.restDensity / (RF * RF);
+    for (let c = 0; c < RN; c++) {
+      const o = 4 * c, dens = fD[c], d = dens / norm;
+      if (d < 0.12) { data[o + 3] = 0; continue; }
+      const inv = 1 / dens, m = (1 - smooth(0.34, 0.62, d)) * 0.42;
+      data[o] = (fR[c] * inv + (1 - fR[c] * inv) * m) * 255;
+      data[o + 1] = (fG[c] * inv + (1 - fG[c] * inv) * m) * 255;
+      data[o + 2] = (fB[c] * inv + (1 - fB[c] * inv) * m) * 255;
+      data[o + 3] = smooth(0.14, 0.34, d) * 228;
+    }
+    waterCtx.putImageData(waterImg, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(waterLayer, view.tx, view.ty, view.tw, view.th);
+  }
+
+  function drawParticles() {
+    const pos = sim.pos, size = Math.max(1.5, 1.7 * sim.r * view.s), half = size / 2;
+    for (let p = 0; p < sim.numP; p++) {
+      ctx.fillStyle = `rgb(${dispCol[3 * p] * 255 | 0},${dispCol[3 * p + 1] * 255 | 0},${dispCol[3 * p + 2] * 255 | 0})`;
+      ctx.fillRect(sx(pos[2 * p]) - half, sy(pos[2 * p + 1]) - half, size, size);
+    }
+  }
+
+  function draw() {
+    if (viewMode === 'surface') drawWater(); else drawParticles();
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(obsLayer, view.tx, view.ty, view.tw, view.th);
+  }
+  return { draw, drawObstacles };
+}
+
+// ---------------------------------------------------------------------------
+// Devices on the 2D overlay
+// ---------------------------------------------------------------------------
 function drawSource(s, isSel) {
   const px = sx(s.x), py = sy(s.y), S = view.s, dpr = view.dpr;
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(-s.angle);
   const L = NOZZLE_LEN * S, Wd = (s.width + 0.05) * S, lip = Math.max(3 * dpr, 0.025 * S);
-  // pipe body
-  ctx.fillStyle = s.on ? '#b8812c' : '#6d6a64';
-  ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = dpr;
+  const body = ctx.createLinearGradient(0, -Wd / 2, 0, Wd / 2);
+  body.addColorStop(0, s.on ? '#e5b664' : '#97948d');
+  body.addColorStop(0.45, s.on ? '#b8812c' : '#6d6a64');
+  body.addColorStop(1, s.on ? '#7a531a' : '#4a4844');
+  ctx.fillStyle = body;
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = dpr;
   ctx.beginPath(); ctx.roundRect(-L * 0.5, -Wd * 0.5, L, Wd, Math.min(Wd * 0.3, 6 * dpr)); ctx.fill(); ctx.stroke();
-  // mouth flange
-  ctx.fillStyle = s.on ? '#e0ad55' : '#8d8a83';
+  ctx.fillStyle = s.on ? '#e9b960' : '#8d8a83';
   ctx.fillRect(L * 0.5 - lip, -Wd * 0.5 - lip * 0.6, lip, Wd + lip * 1.2);
-  // colour band
   const c = PALETTE[s.color].rgb;
   ctx.fillStyle = `rgb(${c[0] * 255 | 0},${c[1] * 255 | 0},${c[2] * 255 | 0})`;
   ctx.fillRect(-L * 0.2, -Wd * 0.5 + dpr, Math.max(3 * dpr, L * 0.14), Wd - 2 * dpr);
@@ -1059,7 +1345,7 @@ function drawSource(s, isSel) {
 function drawDrain(d, isSel) {
   const px = sx(d.x), py = sy(d.y), R = d.r * view.s, dpr = view.dpr;
   ctx.save();
-  ctx.fillStyle = 'rgba(2,5,7,0.9)';
+  ctx.fillStyle = 'rgba(2,5,7,0.92)';
   ctx.beginPath(); ctx.arc(px, py, R, 0, Math.PI * 2); ctx.fill();
   ctx.save(); ctx.clip();
   ctx.strokeStyle = 'rgba(200,170,110,0.55)'; ctx.lineWidth = Math.max(1, 1.5 * dpr);
@@ -1085,7 +1371,7 @@ let drag = null;   // { kind, obj, mode: 'move'|'aim'|'rotate', ox, oy }
 function toWorld(e) {
   const rc = canvas.getBoundingClientRect();
   const px = (e.clientX - rc.left) * view.dpr, py = (e.clientY - rc.top) * view.dpr;
-  return [(px - view.ox) / view.s, TANK_H - (py - view.oy) / view.s];
+  return [(px - view.tx) / view.s, TANK_H - (py - view.ty) / view.s];
 }
 const inside = (x, y) => x > CELL && x < TANK_W - CELL && y > CELL && y < TANK_H - CELL;
 
@@ -1164,16 +1450,18 @@ canvas.addEventListener('pointerup', endPointer);
 canvas.addEventListener('pointercancel', endPointer);
 canvas.addEventListener('pointerleave', () => { pointer.over = false; });
 
-function applyBrushTools(dt) {
+const pourColor = () => (selected && selected.kind === 'source' ? selected.obj.color : 0);
+function applyBrushTools() {
   if (!pointer.down || drag) return;
   const { pos, vel } = sim, R = brushR, R2 = R * R, x = pointer.x, y = pointer.y;
   if (tool === 'pour') {
     const count = Math.ceil(R2 * Math.PI / PARTICLE_AREA * 0.06);
+    const [cr, cg, cb] = PALETTE[pourColor()].rgb;
     for (let k = 0; k < count; k++) {
       const a = Math.random() * Math.PI * 2, rr = Math.sqrt(Math.random()) * R;
       const px = x + Math.cos(a) * rr, py = y + Math.sin(a) * rr;
       if (!inside(px, py) || sim.sampleSDF(px, py) < sim.r) continue;
-      if (!sim.addParticle(px, py, pointer.vx * 0.5, pointer.vy * 0.5 - 0.5, PALETTE[pourColor()].rgb)) break;
+      if (!sim.addParticle(px, py, pointer.vx * 0.5, pointer.vy * 0.5 - 0.5, cr, cg, cb)) break;
     }
   } else if (tool === 'stir') {
     for (let i = 0; i < sim.numP; i++) {
@@ -1191,7 +1479,6 @@ function applyBrushTools(dt) {
     }
   }
 }
-const pourColor = () => (selected && selected.kind === 'source' ? selected.obj.color : 0);
 
 // ---------------------------------------------------------------------------
 // Panel bindings
@@ -1284,10 +1571,14 @@ function bindSeg(id, set) {
 }
 bindSeg('segView', (v) => { viewMode = v; });
 bindSeg('segColor', (v) => { colorMode = v; });
+bindSeg('segQuality', (v) => setQuality(v));
+function syncQualityUI() {
+  for (const b of $('segQuality').querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.v === qualityKey ? 'true' : 'false');
+}
 
 for (const b of document.querySelectorAll('.scene')) b.addEventListener('click', () => loadScene(b.dataset.scene));
 $('btnClearWater').addEventListener('click', () => { sim.numP = 0; });
-$('btnClearWalls').addEventListener('click', () => { sim.clearSolids(); solidsDirty = false; drawObstacleLayer(); });
+$('btnClearWalls').addEventListener('click', () => { sim.clearSolids(); refreshSolids(); });
 
 let paused = false;
 const playBtn = $('btnPlay'), stepBtn = $('btnStep');
@@ -1314,16 +1605,16 @@ window.addEventListener('keydown', (e) => {
 // ---------------------------------------------------------------------------
 const DT = 1 / 60;
 let acc = 0, last = performance.now();
-let statT = 0, inEMA = 0, outEMA = 0;
+let statT = 0, inEMA = 0, outEMA = 0, frames = 0, fps = 0;
 
 function simFrame() {
-  if (solidsDirty) { sim.rebuildSolids(); solidsDirty = false; drawObstacleLayer(); }
+  if (solidsDirty) refreshSolids();
   drainedThisFrame = 0;
   const before = sim.numP;
   emit(DT);
   const emitted = sim.numP - before;
-  applyBrushTools(DT);
-  const sub = clamp(Math.ceil(sim.maxSpeed() * DT / (1.5 * CELL)), 1, 2);
+  applyBrushTools();
+  const sub = clamp(Math.ceil(sim.maxSpeed() * DT / (2 * CELL)), 1, 3);
   for (let k = 0; k < sub; k++) sim.step(DT / sub);
   drainWater(DT);
   inEMA = inEMA * 0.95 + emitted * LITRES_PER_PARTICLE / DT * 0.05;
@@ -1331,12 +1622,10 @@ function simFrame() {
 }
 
 function render() {
+  computeDisplayColors();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, view.cw, view.ch);
-  ctx.drawImage(bgLayer, 0, 0);
-  if (viewMode === 'surface') renderWater(); else renderParticles();
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(obsLayer, sx(0), sy(TANK_H), TANK_W * view.s, TANK_H * view.s);
+  if (glr) glr.draw(); else canvasRenderer.draw();
   for (const d of drains) drawDrain(d, selected?.obj === d);
   for (const s of sources) drawSource(s, selected?.obj === s);
   if (pointer.over && ['wall', 'erase', 'pour', 'stir', 'sponge'].includes(tool)) {
@@ -1349,12 +1638,15 @@ function render() {
 }
 
 function updateStats(now) {
-  if (now - statT < 250) return;
-  statT = now;
+  frames++;
+  if (now - statT < 500) return;
+  fps = frames * 1000 / (now - statT);
+  frames = 0; statT = now;
   $('stVol').textContent = `${(sim.numP * LITRES_PER_PARTICLE).toFixed(0)} L`;
   $('stIn').textContent = `${inEMA.toFixed(1)} L/s`;
   $('stOut').textContent = `${outEMA.toFixed(1)} L/s`;
   $('stP').textContent = `${sim.numP.toLocaleString('en-US')} / ${MAX_P.toLocaleString('en-US')}`;
+  $('stFps').textContent = `${Math.round(fps)}`;
   if (selected?.kind === 'drain') $('drnFlow').textContent = selected.obj.flow.toFixed(1);
 }
 
@@ -1367,18 +1659,36 @@ function frame(now) {
     if (acc >= DT) { simFrame(); acc = Math.min(acc - DT, DT); }
   } else if (stepOnce) {
     simFrame(); stepOnce = false;
-  } else if (solidsDirty) {
-    sim.rebuildSolids(); solidsDirty = false; drawObstacleLayer();
+  } else {
+    if (solidsDirty) refreshSolids();
+    if (pointer.down && (tool === 'pour' || tool === 'sponge')) applyBrushTools();
   }
-  if (paused && pointer.down && ['pour', 'sponge'].includes(tool)) applyBrushTools(DT);
   render();
   updateStats(now);
   requestAnimationFrame(frame);
 }
 
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+let canvasRenderer = null;
+let glr = null;
+buildWorld(qualityKey);
+try { glr = createGLRenderer(); } catch (err) { console.warn('WebGL2 renderer unavailable, using Canvas 2D:', err); glr = null; }
+if (!glr) {
+  canvasRenderer = makeCanvasRenderer();
+  $('rendererInfo').textContent = '這個瀏覽器不支援 WebGL2，水面改用較粗的備援畫法。';
+}
+glCanvas.addEventListener('webglcontextlost', () => {
+  glr = null;
+  canvasRenderer = makeCanvasRenderer();
+  canvasRenderer.drawObstacles();
+});
+
 new ResizeObserver(resize).observe(wrap);
 resize();
 setTool('wall');
+syncQualityUI();
 loadScene('cascade');
 if (document.fonts) document.fonts.ready.then(drawBackground);
 requestAnimationFrame((t) => { last = t; frame(t); });
