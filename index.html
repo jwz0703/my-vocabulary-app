@@ -85,7 +85,7 @@
     main.innerHTML = '<p>載入中…</p>';
     const mdUrl = new URL(doc.file, location.href);
     try {
-      const res = await fetch(mdUrl);
+      const res = await fetch(mdUrl, { cache: 'no-cache' });
       if (!res.ok) throw new Error(res.status);
       const html = marked.parse(await res.text());
       main.innerHTML = '<div id="toolbar"><button data-open="1">展開全部解答</button>' +
