@@ -33,8 +33,8 @@
   .cards b { display: block; font-size: 18px; margin-bottom: 4px; }
   .cards span { color: var(--muted); font-size: 14px; }
   #toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
-  #toolbar button { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;
-                    background: var(--card); color: var(--fg); cursor: pointer; font-size: 14px; }
+  #toolbar button, #toolbar a { padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;
+                    background: var(--card); color: var(--fg); cursor: pointer; font-size: 14px; text-decoration: none; }
   .error { color: #d1242f; }
 </style>
 </head>
@@ -49,17 +49,17 @@
 <script>
   // 要新增講義，在這裡加一筆即可
   const DOCS = [
-    { id: 'week2', file: 'notes/第2週-1140916-行為能力自修.md',
+    { id: 'week2', file: 'notes/第2週-1140916-行為能力自修.md', pdf: 'notes/第2週-1140916 (1).pdf',
       title: '第 2 週：法律行為與行為能力', desc: '114/09/16 · 陳玫儒 · 行為能力、監護宣告、刑事責任能力' },
-    { id: 'week3', file: 'notes/性別平權與生活法律-第三週.md',
+    { id: 'week3', file: 'notes/性別平權與生活法律-第三週.md', pdf: 'notes/第三週-1150924(上傳版).pdf',
       title: '第 3 週：性別平權與生活法律', desc: '115/09/24 · 王俊怡律師 · 親屬、父母子女、繼承' },
-    { id: 'week4', file: 'notes/第4週-1140930-婚姻與離婚自修.md',
+    { id: 'week4', file: 'notes/第4週-1140930-婚姻與離婚自修.md', pdf: 'notes/第4週-1140930 (1).pdf',
       title: '第 4 週：結婚與離婚', desc: '114/09/30 · 結婚要件、近親禁婚、裁判離婚案例' },
-    { id: 'week5', file: 'notes/性別平權與生活法律-第五週.md',
+    { id: 'week5', file: 'notes/性別平權與生活法律-第五週.md', pdf: 'notes/第五週-1151008(上傳版).pdf',
       title: '第 5 週：代位繼承與遺產分割', desc: '115/10/08 · 王俊怡律師 · 代位繼承、喪失繼承權、扣還與歸扣' },
-    { id: 'week6', file: 'notes/性別平權與生活法律-第六週.md',
+    { id: 'week6', file: 'notes/性別平權與生活法律-第六週.md', pdf: 'notes/第六週-1151015(上傳版).pdf',
       title: '第 6 週：繼承的態樣與遺囑', desc: '115/10/15 · 王俊怡律師 · 有限責任、拋棄繼承、遺囑方式、特留分' },
-    { id: 'week7', file: 'notes/第7週-1151022-剩餘財產分配.md',
+    { id: 'week7', file: 'notes/第7週-1151022-剩餘財產分配.md', pdf: 'notes/115-1第7週.pdf',
       title: '第 7 週：剩餘財產分配', desc: '115/10/22 · 陳玫儒律師 · 計算三步驟、基準時點、追加計算、查財產' },
   ];
 
@@ -89,12 +89,21 @@
       if (!res.ok) throw new Error(res.status);
       const html = marked.parse(await res.text());
       main.innerHTML = '<div id="toolbar"><button data-open="1">展開全部解答</button>' +
-        '<button data-open="0">收合全部解答</button></div>' +
+        '<button data-open="0">收合全部解答</button>' +
+        (doc.pdf ? `<a href="${encodeURI(doc.pdf)}" target="_blank" rel="noopener">📄 原始投影片 PDF</a>` : '') +
+        '</div>' +
         '<article class="markdown-body">' + html + '</article>';
       // 圖片路徑是相對於 .md 檔，改成相對於網頁
       main.querySelectorAll('img').forEach(img => {
         img.src = new URL(img.getAttribute('src'), mdUrl).href;
         img.loading = 'lazy';
+      });
+      // 講義內的檔案連結（如 PDF）同樣改成相對於網頁，並開新分頁
+      main.querySelectorAll('article a[href]').forEach(a => {
+        if (a.getAttribute('href').startsWith('#')) return;
+        a.href = new URL(a.getAttribute('href'), mdUrl).href;
+        a.target = '_blank';
+        a.rel = 'noopener';
       });
       main.querySelectorAll('#toolbar button').forEach(b => b.onclick = () =>
         main.querySelectorAll('details').forEach(d => d.open = b.dataset.open === '1'));
